@@ -1,14 +1,14 @@
 package nfc;
 
 import javax.smartcardio.*;
-import java.util.List;
+import java.util.*;
 import java.nio.charset.StandardCharsets;
 
 public class SmartMifareReader {
 
     /**
-     * Reads the UID of the card and optionally dumps data.
-     * Called by UI to get card ID.
+     * Reads only the UID of the card.
+     * Used when you don't need full data dump.
      */
     public static String readUID() {
         try {
@@ -35,9 +35,8 @@ public class SmartMifareReader {
             String uid = bytesToHex(uidResp.getData());
             System.out.println("Card UID: " + uid);
 
-            // === Try Authentication (Optional, only for your cards) ===
+            // Optional: attempt simple authentication
             System.out.println("\nAttempting authentication on your card...");
-
             byte[][] commonKeys = new byte[][] {
                     hex("FFFFFFFFFFFF"),
                     hex("A0A1A2A3A4A5"),
@@ -55,17 +54,13 @@ public class SmartMifareReader {
                 int probeBlock = (sector == 0) ? 1 : firstBlockOfSector;
 
                 AuthResult successfulAuth = null;
-                byte[] successfulKey = null;
-
                 for (byte[] key : commonKeys) {
                     boolean loaded = loadKey(channel, keySlot, key);
                     if (!loaded)
                         continue;
-
                     AuthResult ar = tryAuthAsAorB(channel, probeBlock, (byte) keySlot);
                     if (ar.success) {
                         successfulAuth = ar;
-                        successfulKey = key;
                         anyAuth = true;
                         break;
                     }
@@ -73,14 +68,14 @@ public class SmartMifareReader {
 
                 if (successfulAuth == null)
                     continue;
-
-                // Dump accessible blocks
                 System.out.printf("=== Sector %d unlocked ===\n", sector);
+
                 for (int b = firstBlockOfSector; b < firstBlockOfSector + 4; b++) {
                     if (sector == 0 && b == 0)
                         continue;
                     if ((b % 4) == 3)
                         continue;
+
                     byte[] data = readBlock(channel, b);
                     if (data != null) {
                         System.out.printf("Block %02d: %s | Text: \"%s\"\n",
@@ -89,14 +84,13 @@ public class SmartMifareReader {
                 }
             }
 
-            if (!anyAuth) {
+            if (!anyAuth)
                 System.out.println("No known default key worked for any sector.");
-            }
 
             card.disconnect(false);
             terminal.waitForCardAbsent(0);
 
-            return uid; // ✅ Return UID for app use
+            return uid;
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -127,16 +121,14 @@ public class SmartMifareReader {
 
     private static boolean loadKey(CardChannel channel, int keySlot, byte[] key) {
         try {
-            byte[] apdu = new byte[5 + 6];
+            byte[] apdu = new byte[11];
             apdu[0] = (byte) 0xFF;
             apdu[1] = (byte) 0x82;
             apdu[2] = 0x00;
             apdu[3] = (byte) keySlot;
             apdu[4] = 0x06;
             System.arraycopy(key, 0, apdu, 5, 6);
-
-            CommandAPDU loadKeyCmd = new CommandAPDU(apdu);
-            ResponseAPDU resp = channel.transmit(loadKeyCmd);
+            ResponseAPDU resp = channel.transmit(new CommandAPDU(apdu));
             return resp.getSW() == 0x9000;
         } catch (Exception e) {
             return false;
@@ -158,13 +150,10 @@ public class SmartMifareReader {
 
     private static byte[] readBlock(CardChannel channel, int blockNumber) {
         try {
-            byte[] apdu = new byte[] {
-                    (byte) 0xFF, (byte) 0xB0, 0x00, (byte) blockNumber, 0x10
-            };
+            byte[] apdu = new byte[] { (byte) 0xFF, (byte) 0xB0, 0x00, (byte) blockNumber, 0x10 };
             ResponseAPDU resp = channel.transmit(new CommandAPDU(apdu));
-            if (resp.getSW() == 0x9000) {
+            if (resp.getSW() == 0x9000)
                 return resp.getData();
-            }
             return null;
         } catch (Exception e) {
             return null;
@@ -173,11 +162,9 @@ public class SmartMifareReader {
 
     private static byte[] hex(String s) {
         s = s.replaceAll("[^0-9A-Fa-f]", "");
-        int len = s.length() / 2;
-        byte[] out = new byte[len];
-        for (int i = 0; i < len; i++) {
+        byte[] out = new byte[s.length() / 2];
+        for (int i = 0; i < out.length; i++)
             out[i] = (byte) Integer.parseInt(s.substring(2 * i, 2 * i + 2), 16);
-        }
         return out;
     }
 
@@ -212,5 +199,94 @@ public class SmartMifareReader {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    // --- ✅ Added method for UI integration ---
+    /**
+     * Reads card UID and concatenates printable text from accessible sectors.
+     * Returns both UID and text data for UI use.
+     */
+    public static Map<String, String> readCardData() {
+        Map<String, String> result = new HashMap<>();
+        try {
+            TerminalFactory factory = TerminalFactory.getDefault();
+            List<CardTerminal> terminals = factory.terminals().list();
+            if (terminals.isEmpty()) {
+                result.put("error", "No NFC reader detected.");
+                return result;
+            }
+
+            CardTerminal terminal = terminals.get(0);
+            terminal.waitForCardPresent(0);
+            Card card = terminal.connect("*");
+            CardChannel channel = card.getBasicChannel();
+
+            // UID
+            CommandAPDU getUidCmd = new CommandAPDU(new byte[] {
+                    (byte) 0xFF, (byte) 0xCA, 0x00, 0x00, 0x00
+            });
+            ResponseAPDU uidResp = channel.transmit(getUidCmd);
+            String uid = bytesToHex(uidResp.getData()).replace(" ", "");
+
+            // Common keys
+            byte[][] commonKeys = new byte[][] {
+                    hex("FFFFFFFFFFFF"),
+                    hex("A0A1A2A3A4A5"),
+                    hex("D3F7D3F7D3F7"),
+                    hex("000000000000"),
+                    hex("AABBCCDDEEFF"),
+                    hex("4D3A99C351DD")
+            };
+
+            int keySlot = 0x00;
+            boolean anyAuth = false;
+            StringBuilder readableData = new StringBuilder();
+
+            for (int sector = 0; sector < 16; sector++) {
+                int firstBlockOfSector = sector * 4;
+                int probeBlock = (sector == 0) ? 1 : firstBlockOfSector;
+                AuthResult successfulAuth = null;
+
+                for (byte[] key : commonKeys) {
+                    if (!loadKey(channel, keySlot, key))
+                        continue;
+                    AuthResult ar = tryAuthAsAorB(channel, probeBlock, (byte) keySlot);
+                    if (ar.success) {
+                        successfulAuth = ar;
+                        anyAuth = true;
+                        break;
+                    }
+                }
+
+                if (successfulAuth == null)
+                    continue;
+                for (int b = firstBlockOfSector; b < firstBlockOfSector + 4; b++) {
+                    if (sector == 0 && b == 0)
+                        continue;
+                    if ((b % 4) == 3)
+                        continue;
+                    byte[] data = readBlock(channel, b);
+                    if (data != null) {
+                        String text = new String(data).trim().replaceAll("[^\\p{Print}]", "");
+                        if (!text.isEmpty())
+                            readableData.append(text).append(" ");
+                    }
+                }
+            }
+
+            card.disconnect(false);
+            terminal.waitForCardAbsent(0);
+
+            if (!anyAuth)
+                result.put("error", "No known key worked.");
+            else {
+                result.put("uid", uid);
+                result.put("data", readableData.toString().trim());
+            }
+
+        } catch (Exception e) {
+            result.put("error", e.getMessage());
+        }
+        return result;
     }
 }
