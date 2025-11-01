@@ -4,27 +4,42 @@ import javax.smartcardio.*;
 import java.util.*;
 import java.nio.charset.StandardCharsets;
 
+/**
+ * SmartMifareReader - compatible with JavaFX frontend.
+ * Works with MIFARE 1K/4K cards using ACR1552U or similar readers.
+ * Returns structured data in a Map for UI display (instead of console prints).
+ */
 public class SmartMifareReader {
 
     /**
-     * Reads only the UID of the card.
-     * Used when you don't need full data dump.
+     * Reads full card data (UID + readable text from sectors).
+     * Returns a Map containing: { "uid": "...", "data": "...", "error": "..." }
      */
-    public static String readUID() {
+    public static Map<String, String> readCardData() {
+        Map<String, String> result = new HashMap<>();
         try {
             TerminalFactory factory = TerminalFactory.getDefault();
-            List<CardTerminal> terminals = factory.terminals().list();
-            if (terminals.isEmpty()) {
-                System.out.println("No NFC reader detected.");
-                return null;
+            List<CardTerminal> terminals;
+
+            try {
+                terminals = factory.terminals().list();
+            } catch (CardException e) {
+                result.put("status", "error");
+                result.put("error", "No NFC reader detected or PC/SC service not running.");
+                return result;
             }
+
+            if (terminals.isEmpty()) {
+                result.put("error", "No NFC reader detected.");
+                return result;
+            }
+
             CardTerminal terminal = terminals.get(0);
-            System.out.println("Using reader: " + terminal.getName());
-            System.out.println("Place the card...");
+            result.put("status", "waiting");
+            result.put("message", "Place your card on the reader...");
+
             terminal.waitForCardPresent(0);
             Card card = terminal.connect("*");
-            ATR atr = card.getATR();
-            System.out.println("Card connected. ATR: " + bytesToHex(atr.getBytes()));
             CardChannel channel = card.getBasicChannel();
 
             // === READ UID ===
@@ -32,11 +47,10 @@ public class SmartMifareReader {
                     (byte) 0xFF, (byte) 0xCA, 0x00, 0x00, 0x00
             });
             ResponseAPDU uidResp = channel.transmit(getUidCmd);
-            String uid = bytesToHex(uidResp.getData());
-            System.out.println("Card UID: " + uid);
+            String uid = bytesToHex(uidResp.getData()).replace(" ", "");
+            result.put("uid", uid);
 
-            // Optional: attempt simple authentication
-            System.out.println("\nAttempting authentication on your card...");
+            // === Try Reading Data Using Common Keys ===
             byte[][] commonKeys = new byte[][] {
                     hex("FFFFFFFFFFFF"),
                     hex("A0A1A2A3A4A5"),
@@ -48,15 +62,15 @@ public class SmartMifareReader {
 
             int keySlot = 0x00;
             boolean anyAuth = false;
+            StringBuilder readableData = new StringBuilder();
 
             for (int sector = 0; sector < 16; sector++) {
                 int firstBlockOfSector = sector * 4;
                 int probeBlock = (sector == 0) ? 1 : firstBlockOfSector;
-
                 AuthResult successfulAuth = null;
+
                 for (byte[] key : commonKeys) {
-                    boolean loaded = loadKey(channel, keySlot, key);
-                    if (!loaded)
+                    if (!loadKey(channel, keySlot, key))
                         continue;
                     AuthResult ar = tryAuthAsAorB(channel, probeBlock, (byte) keySlot);
                     if (ar.success) {
@@ -68,37 +82,70 @@ public class SmartMifareReader {
 
                 if (successfulAuth == null)
                     continue;
-                System.out.printf("=== Sector %d unlocked ===\n", sector);
 
                 for (int b = firstBlockOfSector; b < firstBlockOfSector + 4; b++) {
                     if (sector == 0 && b == 0)
                         continue;
                     if ((b % 4) == 3)
-                        continue;
+                        continue; // skip trailer block
 
                     byte[] data = readBlock(channel, b);
                     if (data != null) {
-                        System.out.printf("Block %02d: %s | Text: \"%s\"\n",
-                                b, bytesToHex(data), tryUtf8Trim(data));
+                        String text = tryUtf8Trim(data);
+                        if (!text.isEmpty())
+                            readableData.append(text).append(" ");
                     }
                 }
             }
 
-            if (!anyAuth)
-                System.out.println("No known default key worked for any sector.");
+            card.disconnect(false);
+            terminal.waitForCardAbsent(0);
+
+            if (!anyAuth) {
+                result.put("error", "No known default key worked for any sector.");
+            } else {
+                result.put("data", readableData.toString().trim());
+            }
+
+        } catch (Exception e) {
+            result.put("error", e.getMessage());
+        }
+
+        return result;
+    }
+
+    /**
+     * Reads only UID (fast mode).
+     */
+    public static String readUID() {
+        try {
+            TerminalFactory factory = TerminalFactory.getDefault();
+            List<CardTerminal> terminals = factory.terminals().list();
+            if (terminals.isEmpty())
+                return null;
+
+            CardTerminal terminal = terminals.get(0);
+            terminal.waitForCardPresent(0);
+            Card card = terminal.connect("*");
+            CardChannel channel = card.getBasicChannel();
+
+            CommandAPDU getUidCmd = new CommandAPDU(new byte[] {
+                    (byte) 0xFF, (byte) 0xCA, 0x00, 0x00, 0x00
+            });
+            ResponseAPDU uidResp = channel.transmit(getUidCmd);
+            String uid = bytesToHex(uidResp.getData()).replace(" ", "");
 
             card.disconnect(false);
             terminal.waitForCardAbsent(0);
 
             return uid;
-
         } catch (Exception e) {
-            e.printStackTrace();
             return null;
         }
     }
 
-    // === Helper inner class ===
+    // === Internal helpers ===
+
     private static class AuthResult {
         boolean success;
         byte keyType;
@@ -199,94 +246,5 @@ public class SmartMifareReader {
         } catch (Exception e) {
             return "";
         }
-    }
-
-    // --- ✅ Added method for UI integration ---
-    /**
-     * Reads card UID and concatenates printable text from accessible sectors.
-     * Returns both UID and text data for UI use.
-     */
-    public static Map<String, String> readCardData() {
-        Map<String, String> result = new HashMap<>();
-        try {
-            TerminalFactory factory = TerminalFactory.getDefault();
-            List<CardTerminal> terminals = factory.terminals().list();
-            if (terminals.isEmpty()) {
-                result.put("error", "No NFC reader detected.");
-                return result;
-            }
-
-            CardTerminal terminal = terminals.get(0);
-            terminal.waitForCardPresent(0);
-            Card card = terminal.connect("*");
-            CardChannel channel = card.getBasicChannel();
-
-            // UID
-            CommandAPDU getUidCmd = new CommandAPDU(new byte[] {
-                    (byte) 0xFF, (byte) 0xCA, 0x00, 0x00, 0x00
-            });
-            ResponseAPDU uidResp = channel.transmit(getUidCmd);
-            String uid = bytesToHex(uidResp.getData()).replace(" ", "");
-
-            // Common keys
-            byte[][] commonKeys = new byte[][] {
-                    hex("FFFFFFFFFFFF"),
-                    hex("A0A1A2A3A4A5"),
-                    hex("D3F7D3F7D3F7"),
-                    hex("000000000000"),
-                    hex("AABBCCDDEEFF"),
-                    hex("4D3A99C351DD")
-            };
-
-            int keySlot = 0x00;
-            boolean anyAuth = false;
-            StringBuilder readableData = new StringBuilder();
-
-            for (int sector = 0; sector < 16; sector++) {
-                int firstBlockOfSector = sector * 4;
-                int probeBlock = (sector == 0) ? 1 : firstBlockOfSector;
-                AuthResult successfulAuth = null;
-
-                for (byte[] key : commonKeys) {
-                    if (!loadKey(channel, keySlot, key))
-                        continue;
-                    AuthResult ar = tryAuthAsAorB(channel, probeBlock, (byte) keySlot);
-                    if (ar.success) {
-                        successfulAuth = ar;
-                        anyAuth = true;
-                        break;
-                    }
-                }
-
-                if (successfulAuth == null)
-                    continue;
-                for (int b = firstBlockOfSector; b < firstBlockOfSector + 4; b++) {
-                    if (sector == 0 && b == 0)
-                        continue;
-                    if ((b % 4) == 3)
-                        continue;
-                    byte[] data = readBlock(channel, b);
-                    if (data != null) {
-                        String text = new String(data).trim().replaceAll("[^\\p{Print}]", "");
-                        if (!text.isEmpty())
-                            readableData.append(text).append(" ");
-                    }
-                }
-            }
-
-            card.disconnect(false);
-            terminal.waitForCardAbsent(0);
-
-            if (!anyAuth)
-                result.put("error", "No known key worked.");
-            else {
-                result.put("uid", uid);
-                result.put("data", readableData.toString().trim());
-            }
-
-        } catch (Exception e) {
-            result.put("error", e.getMessage());
-        }
-        return result;
     }
 }
