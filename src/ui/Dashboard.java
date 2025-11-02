@@ -91,19 +91,22 @@ public class Dashboard extends BorderPane {
         attendanceBtn.setOnAction(e -> setContent(AttendancePage.create()));
 
         entryFormBtn.setOnAction(e -> {
-            Parent form = EntryForm.create(formData -> {
-
+            Parent form = EntryForm.create((formData, done) -> {
+                // run writer on background thread
                 new Thread(() -> {
                     try {
+                        // build the CSV exactly as before (preserve empty tokens if you need)
                         String textToWrite = formData.values().stream()
                                 .filter(v -> v != null && !v.trim().isEmpty())
                                 .collect(Collectors.joining(" "));
 
                         SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
+
                         Platform.runLater(() -> {
                             Label success = new Label("✅ Wrote to card UID: " + result.uid +
                                     " blocks=" + result.blocks + " — saved locally.");
                             success.setStyle("-fx-font-size:16px; -fx-text-fill: #27AE60;");
+                            // assuming setContent is a method that swaps content in your app
                             setContent(success);
                         });
 
@@ -114,9 +117,15 @@ public class Dashboard extends BorderPane {
                             err.setStyle("-fx-font-size:16px; -fx-text-fill: #E74C3C;");
                             setContent(err);
                         });
+                    } finally {
+                        // signal EntryForm to re-enable the buttons (must run on FX thread)
+                        // 'done' can be called from any thread; EntryForm's done re-enables via
+                        // Platform.runLater
+                        done.run();
                     }
                 }, "writer-thread").start();
             });
+
             setContent(form);
         });
 

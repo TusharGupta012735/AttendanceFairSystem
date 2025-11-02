@@ -6,13 +6,13 @@ import javafx.beans.binding.DoubleBinding;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Parent;
-import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.Window;
 import nfc.SmartMifareReader;
+import nfc.SmartMifareEraser;
 
 import java.time.LocalDate;
 import java.util.Arrays;
@@ -22,11 +22,23 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 
 public class EntryForm {
 
-    public static Parent create(Consumer<Map<String, String>> onSave) {
+    /**
+     * Note: onSave is now a BiConsumer where the second parameter is a Runnable
+     * `done`
+     * that the caller MUST run (on any thread) when the save/write operation
+     * finishes.
+     *
+     * Example:
+     * form = EntryForm.create((data, done) -> {
+     * new Thread(() -> { try { ...write... } finally { Platform.runLater(done); }
+     * }).start();
+     * });
+     */
+    public static Parent create(BiConsumer<Map<String, String>, Runnable> onSave) {
 
         BorderPane root = new BorderPane();
         root.setPadding(new Insets(20));
@@ -147,12 +159,15 @@ public class EntryForm {
         // Buttons
         Button saveBtn = new Button("Save");
         Button clearBtn = new Button("Clear");
+        Button eraseBtn = new Button("Erase Card"); // Erase button
         saveBtn.setStyle(
                 "-fx-background-color:#2196f3;-fx-text-fill:white;-fx-font-weight:600;-fx-padding:8 20;-fx-background-radius:6;");
         clearBtn.setStyle(
                 "-fx-background-color:#f5f5f5;-fx-text-fill:#424242;-fx-font-weight:600;-fx-padding:8 20;-fx-background-radius:6;-fx-border-color:#e0e0e0;");
+        eraseBtn.setStyle(
+                "-fx-background-color:#e53935;-fx-text-fill:white;-fx-font-weight:600;-fx-padding:8 14;-fx-background-radius:6;");
 
-        HBox buttons = new HBox(10, saveBtn, clearBtn);
+        HBox buttons = new HBox(10, saveBtn, clearBtn, eraseBtn);
         buttons.setAlignment(Pos.CENTER_RIGHT);
         buttons.setPadding(new Insets(10, 0, 0, 0));
 
@@ -160,10 +175,21 @@ public class EntryForm {
         validation.setStyle("-fx-text-fill:#b00020;-fx-font-size:12;");
         validation.setWrapText(true);
 
-        VBox center = new VBox(header, columns, validation, buttons);
+        // status label for erase/write feedback
+        Label status = new Label();
+        status.setStyle("-fx-font-size:12; -fx-text-fill:#424242;");
+        status.setWrapText(true);
+
+        VBox center = new VBox(header, columns, validation, buttons, status);
         center.setSpacing(10);
         center.setPadding(new Insets(10));
         root.setCenter(center);
+
+        // Utility to set disabled state for primary buttons
+        Runnable setPrimaryButtonsDisabled = () -> {
+            // no-op placeholder so lambda below compiles; we'll use explicit calls where
+            // needed
+        };
 
         // Save action
         saveBtn.setOnAction(e -> {
@@ -189,12 +215,43 @@ public class EntryForm {
             data.put("dataOfBirth", dobVal == null ? "" : dobVal.toString() + ",");
             data.put("age", age.getText() + ",");
 
-            if (onSave != null)
-                onSave.accept(data);
+            // Disable buttons while save/write is in progress
+            saveBtn.setDisable(true);
+            clearBtn.setDisable(true);
+            eraseBtn.setDisable(true);
+            status.setStyle("-fx-text-fill:#424242;");
+            status.setText("Submitting... hold card to update (if writing to card).");
 
-            Alert ok = new Alert(Alert.AlertType.INFORMATION, "Saved successfully.", ButtonType.OK);
-            ok.setHeaderText(null);
-            ok.showAndWait();
+            if (onSave != null) {
+                // Provide a done Runnable that re-enables buttons (caller should call it when
+                // finished)
+                Runnable done = () -> {
+                    // run on FX thread to re-enable UI
+                    Platform.runLater(() -> {
+                        saveBtn.setDisable(false);
+                        clearBtn.setDisable(false);
+                        eraseBtn.setDisable(false);
+                        // leave status as-is; caller can update status via Platform.runLater separately
+                    });
+                };
+
+                try {
+                    onSave.accept(data, done);
+                } catch (Exception ex) {
+                    // If the caller throws synchronously, re-enable immediately and show error
+                    saveBtn.setDisable(false);
+                    clearBtn.setDisable(false);
+                    eraseBtn.setDisable(false);
+                    status.setStyle("-fx-text-fill:#E74C3C;");
+                    status.setText("❌ Submit failed: " + ex.getMessage());
+                }
+            } else {
+                // No callback provided, re-enable
+                saveBtn.setDisable(false);
+                clearBtn.setDisable(false);
+                eraseBtn.setDisable(false);
+                status.setText("No save handler configured.");
+            }
         });
 
         // Clear action
@@ -212,6 +269,53 @@ public class EntryForm {
             dataOfBirth.setValue(null);
             age.clear();
             validation.setText("");
+            status.setText("");
+        });
+
+        // Erase Card action (runs on background thread)
+        eraseBtn.setOnAction(evt -> {
+            // Confirm destructive action
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                    "This will overwrite (erase) writable data on the presented MIFARE Classic 1K card for sectors\n" +
+                            "the reader can authenticate. Make sure you own the card and want to proceed.\n\nContinue?",
+                    ButtonType.CANCEL, ButtonType.OK);
+            confirm.setHeaderText(null);
+            confirm.showAndWait().ifPresent(btn -> {
+                if (btn != ButtonType.OK)
+                    return;
+
+                // Disable primary buttons while erasing
+                saveBtn.setDisable(true);
+                clearBtn.setDisable(true);
+                eraseBtn.setDisable(true);
+                status.setStyle("-fx-text-fill:#424242;");
+                status.setText("Waiting for card and erasing... (present card to reader)");
+
+                // Run erase on background thread — eraseMemory blocks while waiting for card
+                Thread th = new Thread(() -> {
+                    try {
+                        SmartMifareEraser.eraseMemory();
+                        Platform.runLater(() -> {
+                            status.setStyle("-fx-text-fill:#27AE60;");
+                            status.setText("✅ Erase complete.");
+                        });
+                    } catch (Exception ex) {
+                        final String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                        Platform.runLater(() -> {
+                            status.setStyle("-fx-text-fill:#E74C3C;");
+                            status.setText("❌ Erase failed: " + msg);
+                        });
+                    } finally {
+                        Platform.runLater(() -> {
+                            saveBtn.setDisable(false);
+                            clearBtn.setDisable(false);
+                            eraseBtn.setDisable(false);
+                        });
+                    }
+                }, "nfc-eraser-thread");
+                th.setDaemon(true);
+                th.start();
+            });
         });
 
         // Force evaluate font binding once

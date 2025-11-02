@@ -5,6 +5,20 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
 
+/**
+ * SmartMifareWriter — improved writer that first discovers ALL authenticated
+ * writable
+ * blocks, checks capacity for the data to write, then writes sequentially
+ * across
+ * discovered blocks (skipping sector trailers).
+ *
+ * Designed for MIFARE Classic 1K (blocks 0..63). Uses reader key slot (FF 82)
+ * + authentication (FF 86) + block read (FF B0) + block write (FF D6).
+ *
+ * Safety: never writes trailer blocks (b % 4 == 3).
+ *
+ * Usage: SmartMifareWriter.writeText(text);
+ */
 public class SmartMifareWriter {
 
     private static final byte[][] COMMON_KEYS = new byte[][] {
@@ -17,17 +31,14 @@ public class SmartMifareWriter {
     };
     private static final int KEY_SLOT = 0x00;
 
-    /** Default wait for card present (ms) */
     public static final long DEFAULT_PRESENT_TIMEOUT_MS = 10_000L;
-    /** Default wait for card absent after write (ms) */
     public static final long DEFAULT_ABSENT_TIMEOUT_MS = 5_000L;
 
-    // Public result POJO
     public static class WriteResult {
-        public final String uid; // UID hex string (uppercase, no spaces)
-        public final List<Integer> blocks; // block indices written
-        public final String textWritten; // original text written
-        public final Instant timestamp; // when write completed
+        public final String uid;
+        public final List<Integer> blocks;
+        public final String textWritten;
+        public final Instant timestamp;
 
         public WriteResult(String uid, List<Integer> blocks, String textWritten, Instant timestamp) {
             this.uid = uid;
@@ -43,34 +54,16 @@ public class SmartMifareWriter {
         }
     }
 
-    /**
-     * Write text using default timeouts. Blocking call.
-     * 
-     * @param text text to write (UTF-8). Must be non-empty.
-     * @return WriteResult on success
-     * @throws Exception on any failure (use message to show user)
-     */
     public static WriteResult writeText(String text) throws Exception {
         return writeText(text, DEFAULT_PRESENT_TIMEOUT_MS, DEFAULT_ABSENT_TIMEOUT_MS);
     }
 
-    /**
-     * Write text blocking call with explicit timeouts.
-     * 
-     * @param text             text to write (UTF-8)
-     * @param presentTimeoutMs timeout waiting for card present
-     * @param absentTimeoutMs  timeout waiting for card absent after write
-     * @return WriteResult on success
-     * @throws Exception on failure
-     */
     public static WriteResult writeText(String text, long presentTimeoutMs, long absentTimeoutMs) throws Exception {
         if (text == null)
             throw new IllegalArgumentException("text is null");
         String trimmed = text.trim();
         if (trimmed.isEmpty())
             throw new IllegalArgumentException("text is empty");
-
-        SmartMifareEraser.eraseMemory();
 
         TerminalFactory factory = TerminalFactory.getDefault();
         List<CardTerminal> terminals = factory.terminals().list();
@@ -79,15 +72,14 @@ public class SmartMifareWriter {
         }
         CardTerminal terminal = terminals.get(0);
 
-        // Wait for card present (with chunked polling to be resilient)
+        // Wait for card present
         final long chunkMs = 500L;
         long deadline = System.currentTimeMillis() + presentTimeoutMs;
         boolean present = false;
         while (System.currentTimeMillis() < deadline) {
             try {
                 present = terminal.waitForCardPresent((int) chunkMs);
-            } catch (CardException ce) {
-                // ignore and continue until deadline
+            } catch (CardException ignore) {
             }
             if (present)
                 break;
@@ -106,70 +98,73 @@ public class SmartMifareWriter {
             CommandAPDU uidCmd = new CommandAPDU(new byte[] { (byte) 0xFF, (byte) 0xCA, 0x00, 0x00, 0x00 });
             ResponseAPDU rUid = channel.transmit(uidCmd);
             uid = bytesToHex(rUid.getData()).replace(" ", "");
+            System.out.println("DEBUG: UID=" + uid + " SW=" + Integer.toHexString(rUid.getSW()));
 
-            // prepare chunks (16 bytes each)
+            // prepare chunks (16 bytes)
             byte[] payload = trimmed.getBytes(StandardCharsets.UTF_8);
             List<byte[]> chunks = chunkBytes(payload, 16);
 
-            // For each chunk, find an empty writable block and write.
-            for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
-                byte[] chunk = chunks.get(chunkIndex);
-                boolean written = false;
+            // DISCOVERY PASS: find all blocks we can authenticate and write to (skip
+            // trailers)
+            // We record for each discovered block: block index and the keyType that worked
+            // (0x60 or 0x61).
+            List<BlockAuth> writableBlocks = discoverWritableBlocks(channel);
+            System.out.println("DEBUG: discovered writable blocks count=" + writableBlocks.size());
 
-                // search candidate blocks on MIFARE Classic 1K (blocks 4..63)
-                for (int block = 4; block < 64 && !written; block++) {
-                    if (isTrailerBlock(block))
-                        continue;
+            // Check capacity
+            int needed = chunks.size();
+            if (writableBlocks.size() < needed) {
+                // helpful diagnostic
+                String msg = "Insufficient authenticated writable blocks: need " + needed + ", found "
+                        + writableBlocks.size() + ".";
+                // include a brief listing
+                StringBuilder sb = new StringBuilder(msg).append(" Blocks:");
+                for (BlockAuth ba : writableBlocks)
+                    sb.append(' ').append(ba.blockIndex);
+                throw new Exception(sb.toString());
+            }
 
-                    // try keys for this block
-                    for (byte[] key : COMMON_KEYS) {
-                        boolean loaded = loadKey(channel, KEY_SLOT, key);
-                        if (!loaded)
-                            continue;
+            // WRITE PASS: write chunks sequentially into discovered blocks
+            for (int i = 0; i < chunks.size(); i++) {
+                byte[] chunk = chunks.get(i);
+                BlockAuth target = writableBlocks.get(i);
 
-                        AuthResult probe = tryAuthAsAorB(channel, block, (byte) KEY_SLOT);
-                        if (!probe.success)
-                            continue;
-
-                        // read block to see if it's empty
-                        byte[] existing = readBlock(channel, block);
-                        boolean empty = existing == null || isDataBlockEmpty(existing);
-                        if (!empty)
-                            continue;
-
-                        // final auth using discovered key type
-                        boolean finalAuth = authWithKeySlot(channel, block, probe.keyType, (byte) KEY_SLOT);
-                        if (!finalAuth)
-                            continue;
-
-                        // attempt write
-                        writeBlock(channel, block, chunk); // throws on verification failure
-                        writtenBlocks.add(block);
-                        written = true;
-                        break; // chunk -> next chunk
-                    } // keys
-                } // blocks
-
-                if (!written) {
-                    throw new Exception("No empty writable block found for chunk " + (chunkIndex + 1));
+                // load the same key we discovered (we already ensured loadKey works in
+                // discovery, but load again to be safe)
+                boolean loaded = loadKey(channel, KEY_SLOT, target.keyBytes);
+                if (!loaded) {
+                    // if load fails unexpectedly, try to reload any other key that might work for
+                    // that block
+                    loaded = loadKey(channel, KEY_SLOT, target.keyBytes);
                 }
-            } // chunks
+                if (!loaded) {
+                    throw new Exception("Failed to load key into reader for block " + target.blockIndex);
+                }
 
-            // success
+                // final auth using discovered key type
+                boolean finalAuth = authWithKeySlot(channel, target.blockIndex, target.keyType, (byte) KEY_SLOT);
+                if (!finalAuth) {
+                    throw new Exception("Final auth failed for block " + target.blockIndex);
+                }
+
+                // attempt write (writeBlock verifies after write)
+                writeBlock(channel, target.blockIndex, chunk);
+                writtenBlocks.add(target.blockIndex);
+                System.out.println("DEBUG: wrote chunk " + (i + 1) + " -> block " + target.blockIndex);
+            }
+
             return new WriteResult(uid, writtenBlocks, trimmed, Instant.now());
 
         } catch (Exception e) {
-            // bubble up with context
             throw new Exception("Write failed: " + e.getMessage(), e);
         } finally {
-            // disconnect
             if (card != null) {
                 try {
                     card.disconnect(false);
                 } catch (Exception ignored) {
                 }
             }
-            // wait for absent (best-effort)
+            // wait for card absent (best-effort)
             long absentDeadline = System.currentTimeMillis() + absentTimeoutMs;
             while (System.currentTimeMillis() < absentDeadline) {
                 try {
@@ -181,26 +176,63 @@ public class SmartMifareWriter {
         }
     }
 
-    // --- Internal helper classes & methods (ported/kept from your code) ---
-    private static class AuthResult {
-        boolean success;
-        byte keyType;
+    // --- Discovery helpers ---
 
-        AuthResult(boolean s, byte t) {
-            success = s;
-            keyType = t;
+    private static class BlockAuth {
+        final int blockIndex;
+        final byte keyType; // 0x60 or 0x61
+        final byte[] keyBytes; // actual key bytes used (6 bytes)
+
+        BlockAuth(int idx, byte kt, byte[] kb) {
+            this.blockIndex = idx;
+            this.keyType = kt;
+            this.keyBytes = kb;
         }
     }
 
-    private static AuthResult tryAuthAsAorB(CardChannel c, int b, byte slot) {
-        boolean aOk = authWithKeySlot(c, b, (byte) 0x60, slot);
-        if (aOk)
-            return new AuthResult(true, (byte) 0x60);
-        boolean bOk = authWithKeySlot(c, b, (byte) 0x61, slot);
-        if (bOk)
-            return new AuthResult(true, (byte) 0x61);
-        return new AuthResult(false, (byte) 0x00);
+    /**
+     * Scan blocks 4..62 (skip trailers) and record blocks where we can:
+     * - load a candidate key into KEY_SLOT
+     * - authenticate as A or B (0x60/0x61) using that key slot
+     *
+     * Returns a list sorted by block index ascending.
+     */
+    private static List<BlockAuth> discoverWritableBlocks(CardChannel channel) {
+        List<BlockAuth> out = new ArrayList<>();
+        for (int block = 4; block < 64; block++) {
+            if (isTrailerBlock(block))
+                continue;
+
+            boolean found = false;
+            for (byte[] key : COMMON_KEYS) {
+                boolean loaded = loadKey(channel, KEY_SLOT, key);
+                System.out.println(
+                        "DEBUG: discover loadKey block=" + block + " key=" + bytesToHex(key) + " -> " + loaded);
+                if (!loaded)
+                    continue;
+
+                // try auth A
+                if (authWithKeySlot(channel, block, (byte) 0x60, (byte) KEY_SLOT)) {
+                    out.add(new BlockAuth(block, (byte) 0x60, key));
+                    found = true;
+                    break;
+                }
+                // try auth B
+                if (authWithKeySlot(channel, block, (byte) 0x61, (byte) KEY_SLOT)) {
+                    out.add(new BlockAuth(block, (byte) 0x61, key));
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // block not writable with common keys - skip
+            }
+        }
+        // list is naturally in ascending block order; return as-is
+        return out;
     }
+
+    // --- Internal helper classes & methods (from your prior code) ---
 
     private static boolean loadKey(CardChannel c, int slot, byte[] key) {
         try {
@@ -212,6 +244,7 @@ public class SmartMifareWriter {
             apdu[4] = 0x06;
             System.arraycopy(key, 0, apdu, 5, 6);
             ResponseAPDU r = c.transmit(new CommandAPDU(apdu));
+            System.out.println("DEBUG: LOAD KEY SW=" + Integer.toHexString(r.getSW()));
             return r.getSW() == 0x9000;
         } catch (Exception e) {
             return false;
@@ -222,6 +255,7 @@ public class SmartMifareWriter {
         try {
             byte[] apdu = new byte[] { (byte) 0xFF, (byte) 0x86, 0x00, 0x00, 0x05, 0x01, 0x00, (byte) b, type, slot };
             ResponseAPDU r = c.transmit(new CommandAPDU(apdu));
+            System.out.println("DEBUG: AUTH SW for block " + b + " -> " + Integer.toHexString(r.getSW()));
             return r.getSW() == 0x9000;
         } catch (Exception e) {
             return false;
@@ -243,6 +277,7 @@ public class SmartMifareWriter {
         System.arraycopy(data, 0, apdu, 5, 16);
 
         ResponseAPDU r = c.transmit(new CommandAPDU(apdu));
+        System.out.println("DEBUG: WRITE SW for block " + b + " -> " + Integer.toHexString(r.getSW()));
         if (r.getSW() != 0x9000) {
             throw new Exception("Write failed SW=" + Integer.toHexString(r.getSW()));
         }
@@ -258,6 +293,7 @@ public class SmartMifareWriter {
         try {
             byte[] cmd = new byte[] { (byte) 0xFF, (byte) 0xB0, 0x00, (byte) b, 0x10 };
             ResponseAPDU r = c.transmit(new CommandAPDU(cmd));
+            System.out.println("DEBUG: READ SW for block " + b + " -> " + Integer.toHexString(r.getSW()));
             if (r.getSW() == 0x9000) {
                 return r.getData();
             }
@@ -295,15 +331,6 @@ public class SmartMifareWriter {
             out.add(empty);
         }
         return out;
-    }
-
-    private static boolean isDataBlockEmpty(byte[] d) {
-        if (d == null || d.length == 0)
-            return true;
-        for (byte b : d)
-            if (b != 0x00 && b != (byte) 0xFF)
-                return false;
-        return true;
     }
 
     private static String bytesToHex(byte[] b) {
