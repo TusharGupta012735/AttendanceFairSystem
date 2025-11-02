@@ -1,8 +1,9 @@
 package ui;
 
+import javafx.beans.binding.Bindings;
+import javafx.beans.binding.DoubleBinding;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
-import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
@@ -16,336 +17,205 @@ import java.util.function.Consumer;
 
 public class EntryForm {
 
-    /**
-     * Create the entry form UI.
-     * 
-     * @param onSave callback invoked with a Map<String,String> of field -> value
-     *               when Save is pressed and validation passes.
-     * @return Parent node (you can add to scene, or use in your setContent(...)
-     *         method)
-     */
     public static Parent create(Consumer<Map<String, String>> onSave) {
-        // Root container
+
         BorderPane root = new BorderPane();
         root.setPadding(new Insets(20));
-        root.setStyle("-fx-background-color: linear-gradient(to bottom, #ffffff, #f0f4f8);");
+        root.setStyle("-fx-background-color: linear-gradient(to bottom, #ffffff, #f4f6f8);");
 
-        // Header
         Label title = new Label("📝 Entry Form");
-        title.setFont(Font.font("System", FontWeight.BOLD, 22));
+        title.setFont(Font.font("System", FontWeight.BOLD, 24));
+        title.setStyle("-fx-text-fill: #1565c0;");
         HBox header = new HBox(title);
-        header.setPadding(new Insets(0, 0, 12, 0));
         header.setAlignment(Pos.CENTER_LEFT);
+        header.setPadding(new Insets(0, 0, 12, 0));
 
-        // Create a Grid for labels & fields (2 columns)
-        GridPane grid = new GridPane();
-        grid.setHgap(14);
-        grid.setVgap(10);
-        grid.setPadding(new Insets(6, 6, 6, 6));
+        // Base styles (will be updated dynamically)
+        String baseStyleCore = "-fx-background-color: white; -fx-border-color: #bdbdbd; -fx-border-radius: 6; " +
+                "-fx-background-radius: 6; -fx-padding: 8 10; -fx-text-fill: #212121;";
+        String labelBaseStyleCore = "-fx-font-weight:600; -fx-text-fill:#212121;";
 
-        // Helper to add label+field to grid
-        final int[] row = { 0 };
-        java.util.function.BiConsumer<String, Node> addRow = (labelText, node) -> {
-            Label lbl = new Label(labelText);
-            lbl.setMinWidth(150);
-            lbl.setWrapText(true);
-            lbl.setStyle("-fx-font-weight: 600; -fx-text-fill: #2c3e50;");
-            GridPane.setConstraints(lbl, 0, row[0]);
-            GridPane.setConstraints(node, 1, row[0]);
-            grid.getChildren().addAll(lbl, node);
-            row[0]++;
+        // Create input controls
+        TextField fullName = new TextField();
+        fullName.setPromptText("Full name");
+        TextField bsguid = new TextField();
+        bsguid.setPromptText("BS GUID");
+        ComboBox<String> participationType = new ComboBox<>();
+        participationType.getItems().addAll("guide", "scout", "ranger");
+        participationType.setPromptText("Select");
+        TextField bsgDistrict = new TextField();
+        bsgDistrict.setPromptText("District");
+        TextField email = new TextField();
+        email.setPromptText("example@domain.com");
+        TextField phoneNumber = new TextField();
+        phoneNumber.setPromptText("Phone number");
+        TextField bsgState = new TextField();
+        bsgState.setPromptText("State");
+        TextField memberTyp = new TextField();
+        memberTyp.setPromptText("Member type");
+        TextField unitNam = new TextField();
+        unitNam.setPromptText("Unit name");
+        ComboBox<String> rank_or_section = new ComboBox<>();
+        rank_or_section.getItems().addAll("guide", "scout", "ranger");
+        rank_or_section.setPromptText("Select");
+        DatePicker dataOfBirth = new DatePicker();
+        dataOfBirth.setPromptText("Date of birth");
+        TextField age = new TextField();
+        age.setPromptText("Age");
+
+        Control[] controls = new Control[] {
+                fullName, bsguid, participationType, bsgDistrict,
+                email, phoneNumber, bsgState, memberTyp,
+                unitNam, rank_or_section, dataOfBirth, age
         };
 
-        // Common style for all text inputs
-        String textFieldStyle = "-fx-background-color: white;" +
-                "-fx-border-color: #e0e0e0;" +
-                "-fx-border-radius: 4;" +
-                "-fx-background-radius: 4;" +
-                "-fx-padding: 8;" +
-                "-fx-prompt-text-fill: #9e9e9e;" +
-                "-fx-font-size: 13;";
+        for (Control c : controls) {
+            c.setStyle(baseStyleCore);
+        }
 
-        String textFieldHoverStyle = textFieldStyle +
-                "-fx-border-color: #2196f3;" +
-                "-fx-effect: dropshadow(gaussian, rgba(33,150,243,0.1), 8, 0, 0, 0);";
+        // Left and right grids
+        GridPane left = new GridPane();
+        left.setHgap(10);
+        left.setVgap(14);
+        GridPane right = new GridPane();
+        right.setHgap(10);
+        right.setVgap(14);
 
-        // Fields (use TextField, DatePicker, ComboBox, TextArea as appropriate)
-        TextField m_uid = new TextField();
-        m_uid.setPromptText("Auto or enter UID");
-        m_uid.setStyle(textFieldStyle);
-        m_uid.setOnMouseEntered(e -> m_uid.setStyle(textFieldHoverStyle));
-        m_uid.setOnMouseExited(e -> m_uid.setStyle(textFieldStyle));
+        addField(left, 0, "FullName", fullName);
+        addField(left, 1, "BSGUID", bsguid);
+        addField(left, 2, "ParticipationType", participationType);
+        addField(left, 3, "bsgDistrict", bsgDistrict);
+        addField(left, 4, "unitNam", unitNam);
+        addField(left, 5, "dataOfBirth", dataOfBirth);
 
-        TextField m_name = new TextField();
-        m_name.setPromptText("Full name");
-        m_name.setStyle(textFieldStyle);
-        m_name.setOnMouseEntered(e -> m_name.setStyle(textFieldHoverStyle));
-        m_name.setOnMouseExited(e -> m_name.setStyle(textFieldStyle));
+        addField(right, 0, "Email", email);
+        addField(right, 1, "phoneNumber", phoneNumber);
+        addField(right, 2, "bsgState", bsgState);
+        addField(right, 3, "memberTyp", memberTyp);
+        addField(right, 4, "rank_or_section", rank_or_section);
+        addField(right, 5, "age", age);
 
-        TextField m_mobile = new TextField();
-        m_mobile.setPromptText("10-digit mobile");
-        m_mobile.setStyle(textFieldStyle);
-        m_mobile.setOnMouseEntered(e -> m_mobile.setStyle(textFieldHoverStyle));
-        m_mobile.setOnMouseExited(e -> m_mobile.setStyle(textFieldStyle));
+        HBox columns = new HBox(60, left, right);
+        columns.setAlignment(Pos.CENTER);
+        columns.setPadding(new Insets(10));
 
-        TextField m_aadhar = new TextField();
-        m_aadhar.setPromptText("Aadhar number");
-        m_aadhar.setStyle(textFieldStyle);
-        m_aadhar.setOnMouseEntered(e -> m_aadhar.setStyle(textFieldHoverStyle));
-        m_aadhar.setOnMouseExited(e -> m_aadhar.setStyle(textFieldStyle));
+        // Bind input widths dynamically
+        DoubleBinding fieldWidthBinding = columns.widthProperty().divide(2.3);
+        for (Control c : controls) {
+            ((Region) c).prefWidthProperty().bind(fieldWidthBinding);
+        }
 
-        DatePicker m_dob = new DatePicker();
-        m_dob.setPromptText("Date of birth");
-        m_dob.setStyle(textFieldStyle);
-        m_dob.getEditor().setStyle(textFieldStyle);
+        // Dynamic font size (safe version)
+        DoubleBinding fontSizeBinding = Bindings.createDoubleBinding(() -> {
+            double w = columns.getWidth();
+            double fs = w / 70.0;
+            if (fs < 12)
+                fs = 12;
+            if (fs > 18)
+                fs = 18;
+            return fs;
+        }, columns.widthProperty());
 
-        ComboBox<String> m_bloodgroup = new ComboBox<>();
-        m_bloodgroup.getItems().addAll("A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-");
-        m_bloodgroup.setEditable(false);
-        m_bloodgroup.setPromptText("Select");
-        m_bloodgroup.setStyle(textFieldStyle + "-fx-background-color: white;");
-        m_bloodgroup
-                .setOnMouseEntered(e -> m_bloodgroup.setStyle(textFieldHoverStyle + "-fx-background-color: white;"));
-        m_bloodgroup.setOnMouseExited(e -> m_bloodgroup.setStyle(textFieldStyle + "-fx-background-color: white;"));
+        fontSizeBinding.addListener((obs, oldV, newV) -> {
+            double fs = newV.doubleValue();
+            left.getChildren().stream()
+                    .filter(n -> n instanceof Label)
+                    .forEach(n -> n.setStyle(labelBaseStyleCore + "; -fx-font-size: " + (fs - 1) + "px;"));
+            right.getChildren().stream()
+                    .filter(n -> n instanceof Label)
+                    .forEach(n -> n.setStyle(labelBaseStyleCore + "; -fx-font-size: " + (fs - 1) + "px;"));
+            for (Control c : controls) {
+                c.setStyle(baseStyleCore + " -fx-font-size: " + fs + "px;");
+                if (c instanceof DatePicker) {
+                    DatePicker dp = (DatePicker) c;
+                    if (dp.getEditor() != null)
+                        dp.getEditor().setStyle("-fx-font-size:" + fs + "px;");
+                }
+            }
+            title.setFont(Font.font("System", FontWeight.BOLD, Math.max(16, fs + 4)));
+        });
 
-        TextField m_father = new TextField();
-        m_father.setStyle(textFieldStyle);
-        m_father.setOnMouseEntered(e -> m_father.setStyle(textFieldHoverStyle));
-        m_father.setOnMouseExited(e -> m_father.setStyle(textFieldStyle));
-
-        TextField m_mother = new TextField();
-        m_mother.setStyle(textFieldStyle);
-        m_mother.setOnMouseEntered(e -> m_mother.setStyle(textFieldHoverStyle));
-        m_mother.setOnMouseExited(e -> m_mother.setStyle(textFieldStyle));
-
-        TextField m_email = new TextField();
-        m_email.setPromptText("example@domain.com");
-        m_email.setStyle(textFieldStyle);
-        m_email.setOnMouseEntered(e -> m_email.setStyle(textFieldHoverStyle));
-        m_email.setOnMouseExited(e -> m_email.setStyle(textFieldStyle));
-
-        TextArea m_address = new TextArea();
-        m_address.setPrefRowCount(3);
-        m_address.setWrapText(true);
-        m_address.setStyle(textFieldStyle);
-        m_address.setOnMouseEntered(e -> m_address.setStyle(textFieldHoverStyle));
-        m_address.setOnMouseExited(e -> m_address.setStyle(textFieldStyle));
-
-        TextField m_state = new TextField();
-        m_state.setStyle(textFieldStyle);
-        m_state.setOnMouseEntered(e -> m_state.setStyle(textFieldHoverStyle));
-        m_state.setOnMouseExited(e -> m_state.setStyle(textFieldStyle));
-
-        TextField m_pincode = new TextField();
-        m_pincode.setStyle(textFieldStyle);
-        m_pincode.setOnMouseEntered(e -> m_pincode.setStyle(textFieldHoverStyle));
-        m_pincode.setOnMouseExited(e -> m_pincode.setStyle(textFieldStyle));
-
-        TextField m_district = new TextField();
-        m_district.setStyle(textFieldStyle);
-        m_district.setOnMouseEntered(e -> m_district.setStyle(textFieldHoverStyle));
-        m_district.setOnMouseExited(e -> m_district.setStyle(textFieldStyle));
-
-        TextField m_category = new TextField();
-        m_category.setStyle(textFieldStyle);
-        m_category.setOnMouseEntered(e -> m_category.setStyle(textFieldHoverStyle));
-        m_category.setOnMouseExited(e -> m_category.setStyle(textFieldStyle));
-
-        TextField m_rank = new TextField();
-        m_rank.setStyle(textFieldStyle);
-        m_rank.setOnMouseEntered(e -> m_rank.setStyle(textFieldHoverStyle));
-        m_rank.setOnMouseExited(e -> m_rank.setStyle(textFieldStyle));
-
-        TextField m_econtactperson = new TextField();
-        m_econtactperson.setStyle(textFieldStyle);
-        m_econtactperson.setOnMouseEntered(e -> m_econtactperson.setStyle(textFieldHoverStyle));
-        m_econtactperson.setOnMouseExited(e -> m_econtactperson.setStyle(textFieldStyle));
-
-        TextField m_econtactmobile = new TextField();
-        m_econtactmobile.setStyle(textFieldStyle);
-        m_econtactmobile.setOnMouseEntered(e -> m_econtactmobile.setStyle(textFieldHoverStyle));
-        m_econtactmobile.setOnMouseExited(e -> m_econtactmobile.setStyle(textFieldStyle));
-
-        TextField m_erelation = new TextField();
-        m_erelation.setStyle(textFieldStyle);
-        m_erelation.setOnMouseEntered(e -> m_erelation.setStyle(textFieldHoverStyle));
-        m_erelation.setOnMouseExited(e -> m_erelation.setStyle(textFieldStyle));
-
-        TextField m_bsguid = new TextField();
-        m_bsguid.setStyle(textFieldStyle);
-        m_bsguid.setOnMouseEntered(e -> m_bsguid.setStyle(textFieldHoverStyle));
-        m_bsguid.setOnMouseExited(e -> m_bsguid.setStyle(textFieldStyle));
-
-        TextField m_age = new TextField();
-        m_age.setPromptText("Numeric age");
-        m_age.setStyle(textFieldStyle);
-        m_age.setOnMouseEntered(e -> m_age.setStyle(textFieldHoverStyle));
-        m_age.setOnMouseExited(e -> m_age.setStyle(textFieldStyle));
-
-        // Add rows
-        addRow.accept("UID:", m_uid);
-        addRow.accept("Name:", m_name);
-        addRow.accept("Mobile:", m_mobile);
-        addRow.accept("Aadhar:", m_aadhar);
-        addRow.accept("DOB:", m_dob);
-        addRow.accept("Blood Group:", m_bloodgroup);
-        addRow.accept("Father's Name:", m_father);
-        addRow.accept("Mother's Name:", m_mother);
-        addRow.accept("Email:", m_email);
-        addRow.accept("Address:", m_address);
-        addRow.accept("State:", m_state);
-        addRow.accept("Pincode:", m_pincode);
-        addRow.accept("District:", m_district);
-        addRow.accept("Category:", m_category);
-        addRow.accept("Rank:", m_rank);
-        addRow.accept("Emergency Contact Person:", m_econtactperson);
-        addRow.accept("Emergency Contact Mobile:", m_econtactmobile);
-        addRow.accept("Emergency Relation:", m_erelation);
-        addRow.accept("BS GUID:", m_bsguid);
-        addRow.accept("Age:", m_age);
-
-        // Put grid inside a scrollable pane for small windows
-        ScrollPane scroll = new ScrollPane(grid);
-        scroll.setFitToWidth(true);
-        scroll.setStyle(
-                "-fx-background: transparent; -fx-background-color: transparent; -fx-border-color: transparent;");
-        scroll.setPrefViewportHeight(520);
-
-        // Action buttons
-        String btnBaseStyle = "-fx-background-radius: 6; -fx-padding: 10 20 10 20; -fx-font-weight: 600; -fx-font-size: 13;";
-
+        // Buttons
         Button saveBtn = new Button("Save");
-        saveBtn.setDefaultButton(true);
-        saveBtn.setStyle(btnBaseStyle +
-                "-fx-background-color: #2196f3; -fx-text-fill: white; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.2), 4, 0, 0, 1);");
-        saveBtn.setOnMouseEntered(e -> saveBtn.setStyle(btnBaseStyle +
-                "-fx-background-color: #1976d2; -fx-text-fill: white; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.3), 6, 0, 0, 2);"));
-        saveBtn.setOnMouseExited(e -> saveBtn.setStyle(btnBaseStyle +
-                "-fx-background-color: #2196f3; -fx-text-fill: white; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.2), 4, 0, 0, 1);"));
-
         Button clearBtn = new Button("Clear");
-        clearBtn.setStyle(btnBaseStyle +
-                "-fx-background-color: #f5f5f5; -fx-text-fill: #424242; -fx-border-color: #e0e0e0; -fx-border-radius: 6;");
-        clearBtn.setOnMouseEntered(e -> clearBtn.setStyle(btnBaseStyle +
-                "-fx-background-color: #eeeeee; -fx-text-fill: #424242; -fx-border-color: #e0e0e0; -fx-border-radius: 6;"));
-        clearBtn.setOnMouseExited(e -> clearBtn.setStyle(btnBaseStyle +
-                "-fx-background-color: #f5f5f5; -fx-text-fill: #424242; -fx-border-color: #e0e0e0; -fx-border-radius: 6;"));
+        saveBtn.setStyle(
+                "-fx-background-color:#2196f3;-fx-text-fill:white;-fx-font-weight:600;-fx-padding:8 20;-fx-background-radius:6;");
+        clearBtn.setStyle(
+                "-fx-background-color:#f5f5f5;-fx-text-fill:#424242;-fx-font-weight:600;-fx-padding:8 20;-fx-background-radius:6;-fx-border-color:#e0e0e0;");
 
-        HBox actions = new HBox(10, saveBtn, clearBtn);
-        actions.setAlignment(Pos.CENTER_RIGHT);
-        actions.setPadding(new Insets(12, 0, 0, 0));
+        HBox buttons = new HBox(10, saveBtn, clearBtn);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        buttons.setPadding(new Insets(10, 0, 0, 0));
 
-        // Validation label
         Label validation = new Label();
-        validation.setStyle("-fx-text-fill: #b00020; -fx-font-size: 12;");
+        validation.setStyle("-fx-text-fill:#b00020;-fx-font-size:12;");
         validation.setWrapText(true);
 
-        VBox centerBox = new VBox(header, scroll, validation, actions);
-        centerBox.setSpacing(10);
-        centerBox.setPadding(new Insets(6));
-        root.setCenter(centerBox);
+        VBox center = new VBox(header, columns, validation, buttons);
+        center.setSpacing(10);
+        center.setPadding(new Insets(10));
+        root.setCenter(center);
 
-        // Save action: validate and build a map of values
-        saveBtn.setOnAction(evt -> {
+        // Save action
+        saveBtn.setOnAction(e -> {
             validation.setText("");
-            String error = validateFields(m_name, m_mobile, m_email, m_pincode, m_age, m_econtactmobile);
-            if (!error.isEmpty()) {
-                validation.setText(error);
+            if (fullName.getText().trim().isEmpty() || phoneNumber.getText().trim().isEmpty()) {
+                validation.setText("Please fill required fields.");
                 return;
             }
 
             Map<String, String> data = new LinkedHashMap<>();
-            data.put("m_uid", m_uid.getText());
-            data.put("m_name", m_name.getText());
-            data.put("m_mobile", m_mobile.getText());
-            data.put("m_aadhar", m_aadhar.getText());
-            LocalDate dobVal = m_dob.getValue();
-            data.put("m_dob", dobVal == null ? "" : dobVal.toString());
-            data.put("m_bloodgroup", m_bloodgroup.getValue() == null ? "" : m_bloodgroup.getValue());
-            data.put("m_father", m_father.getText());
-            data.put("m_mother", m_mother.getText());
-            data.put("m_email", m_email.getText());
-            data.put("m_address", m_address.getText());
-            data.put("m_state", m_state.getText());
-            data.put("m_pincode", m_pincode.getText());
-            data.put("m_district", m_district.getText());
-            data.put("m_category", m_category.getText());
-            data.put("m_rank", m_rank.getText());
-            data.put("m_econtactperson", m_econtactperson.getText());
-            data.put("m_econtactmobile", m_econtactmobile.getText());
-            data.put("m_erelation", m_erelation.getText());
-            data.put("m_bsguid", m_bsguid.getText());
-            data.put("m_age", m_age.getText());
+            data.put("FullName", fullName.getText() + ",");
+            data.put("BSGUID", bsguid.getText() + ",");
+            data.put("ParticipationType",
+                    participationType.getValue() == null ? "" : participationType.getValue() + ",");
+            data.put("bsgDistrict", bsgDistrict.getText() + ",");
+            data.put("Email", email.getText() + ",");
+            data.put("phoneNumber", phoneNumber.getText() + ",");
+            data.put("bsgState", bsgState.getText() + ",");
+            data.put("memberTyp", memberTyp.getText() + ",");
+            data.put("unitNam", unitNam.getText() + ",");
+            data.put("rank_or_section", rank_or_section.getValue() == null ? "" : rank_or_section.getValue() + ",");
+            LocalDate dobVal = dataOfBirth.getValue();
+            data.put("dataOfBirth", dobVal == null ? "" : dobVal.toString() + ",");
+            data.put("age", age.getText() + ",");
 
-            // Callback for parent to handle the data (DB insert, etc.)
             if (onSave != null)
                 onSave.accept(data);
 
-            // Optionally show success and clear
             Alert ok = new Alert(Alert.AlertType.INFORMATION, "Saved successfully.", ButtonType.OK);
             ok.setHeaderText(null);
             ok.showAndWait();
         });
 
+        // Clear action
         clearBtn.setOnAction(evt -> {
-            m_uid.clear();
-            m_name.clear();
-            m_mobile.clear();
-            m_aadhar.clear();
-            m_dob.setValue(null);
-            m_bloodgroup.setValue(null);
-            m_father.clear();
-            m_mother.clear();
-            m_email.clear();
-            m_address.clear();
-            m_state.clear();
-            m_pincode.clear();
-            m_district.clear();
-            m_category.clear();
-            m_rank.clear();
-            m_econtactperson.clear();
-            m_econtactmobile.clear();
-            m_erelation.clear();
-            m_bsguid.clear();
-            m_age.clear();
+            fullName.clear();
+            bsguid.clear();
+            participationType.setValue(null);
+            bsgDistrict.clear();
+            email.clear();
+            phoneNumber.clear();
+            bsgState.clear();
+            memberTyp.clear();
+            unitNam.clear();
+            rank_or_section.setValue(null);
+            dataOfBirth.setValue(null);
+            age.clear();
             validation.setText("");
         });
 
-        // A little responsive width handling for the grid fields
-        grid.getColumnConstraints().addAll(
-                new ColumnConstraints(160, 160, 260), // labels
-                new ColumnConstraints(300, 500, Double.MAX_VALUE) // fields grow
-        );
+        // Force evaluate font binding once
+        fontSizeBinding.getValue();
 
         return root;
     }
 
-    // Basic validation example, returns error message (empty if ok)
-    private static String validateFields(TextField name, TextField mobile, TextField email,
-            TextField pincode, TextField age, TextField econtactMobile) {
-        StringBuilder err = new StringBuilder();
-        if (name.getText() == null || name.getText().trim().length() < 2) {
-            err.append("Please enter a valid name.\n");
-        }
-        if (mobile.getText() == null || !mobile.getText().matches("\\d{10}")) {
-            err.append("Mobile must be 10 digits.\n");
-        }
-        if (email.getText() != null && !email.getText().trim().isEmpty() &&
-                !email.getText().matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")) {
-            err.append("Email doesn't look valid.\n");
-        }
-        if (pincode.getText() != null && !pincode.getText().trim().isEmpty() &&
-                !pincode.getText().matches("\\d{4,6}")) {
-            err.append("Pincode should be 4-6 digits.\n");
-        }
-        if (age.getText() != null && !age.getText().trim().isEmpty() &&
-                !age.getText().matches("\\d{1,3}")) {
-            err.append("Age must be numeric.\n");
-        }
-        if (econtactMobile.getText() != null && !econtactMobile.getText().trim().isEmpty() &&
-                !econtactMobile.getText().matches("\\d{10}")) {
-            err.append("Emergency contact mobile must be 10 digits.\n");
-        }
-        return err.toString();
+    private static void addField(GridPane grid, int row, String labelText, Control field) {
+        Label lbl = new Label(labelText + ":");
+        lbl.setStyle("-fx-font-weight:600;-fx-text-fill:#212121;");
+        GridPane.setConstraints(lbl, 0, row);
+        GridPane.setConstraints(field, 1, row);
+        grid.getChildren().addAll(lbl, field);
     }
 }

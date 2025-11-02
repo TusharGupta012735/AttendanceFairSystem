@@ -34,23 +34,25 @@ public class Dashboard extends BorderPane {
 
         // --- Common Button Style ---
         String btnStyle = """
-                    -fx-background-color: #2ECC71;
+                    -fx-background-color: #1976d2;
                     -fx-text-fill: white;
                     -fx-font-weight: bold;
-                    -fx-font-size: 14px;
-                    -fx-background-radius: 10;
-                    -fx-padding: 10 16;
+                    -fx-font-size: 15px;
+                    -fx-background-radius: 8;
+                    -fx-padding: 12 20;
                     -fx-cursor: hand;
+                    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.2), 4, 0, 0, 1);
                 """;
 
         String hoverStyle = """
-                    -fx-background-color: #27AE60;
+                    -fx-background-color: #2196f3;
                     -fx-text-fill: white;
                     -fx-font-weight: bold;
-                    -fx-font-size: 14px;
-                    -fx-background-radius: 10;
-                    -fx-padding: 10 16;
+                    -fx-font-size: 15px;
+                    -fx-background-radius: 8;
+                    -fx-padding: 12 20;
                     -fx-cursor: hand;
+                    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.3), 6, 0, 0, 2);
                 """;
 
         attendanceBtn.setStyle(btnStyle);
@@ -66,9 +68,10 @@ public class Dashboard extends BorderPane {
         }
 
         // --- Navbar Layout ---
-        HBox navBar = new HBox(15, attendanceBtn, entryFormBtn, autoUploadBtn, reportBtn, infoBtn);
-        navBar.setPadding(new Insets(10));
-        navBar.setStyle("-fx-background-color: #34495E; -fx-alignment: center;");
+        HBox navBar = new HBox(20, attendanceBtn, entryFormBtn, autoUploadBtn, reportBtn, infoBtn);
+        navBar.setPadding(new Insets(15, 20, 15, 20));
+        navBar.setStyle(
+                "-fx-background-color: linear-gradient(to bottom, #1565c0, #0d47a1); -fx-alignment: center; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.2), 8, 0, 0, 2);");
 
         // --- Make Buttons Expand Evenly ---
         for (Button btn : new Button[] { attendanceBtn, entryFormBtn, autoUploadBtn, reportBtn, infoBtn }) {
@@ -88,7 +91,18 @@ public class Dashboard extends BorderPane {
         attendanceBtn.setOnAction(e -> {
             // show waiting message
             Label status = new Label("📡 Waiting for card...");
-            status.setStyle("-fx-font-size: 16px; -fx-text-fill: #2980B9;");
+            status.setStyle("""
+                        -fx-font-size: 24px;
+                        -fx-font-weight: bold;
+                        -fx-text-fill: #1565C0;
+                        -fx-background-color: #E3F2FD;
+                        -fx-padding: 20 30;
+                        -fx-background-radius: 10;
+                        -fx-border-color: #1565C0;
+                        -fx-border-radius: 10;
+                        -fx-border-width: 2;
+                        -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
+                    """);
             setContent(status);
 
             // read UID in a background thread
@@ -99,12 +113,34 @@ public class Dashboard extends BorderPane {
                 javafx.application.Platform.runLater(() -> {
                     if (uid != null && !uid.isEmpty()) {
                         Label success = new Label("✅ Attendance marked for uuid : " + uid);
-                        success.setStyle("-fx-font-size: 16px; -fx-text-fill: #27AE60;");
+                        success.setStyle("""
+                                    -fx-font-size: 24px;
+                                    -fx-font-weight: bold;
+                                    -fx-text-fill: #2E7D32;
+                                    -fx-background-color: #E8F5E9;
+                                    -fx-padding: 20 30;
+                                    -fx-background-radius: 10;
+                                    -fx-border-color: #2E7D32;
+                                    -fx-border-radius: 10;
+                                    -fx-border-width: 2;
+                                    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
+                                """);
                         setContent(success);
                         System.out.println("Attendance marked for UID: " + uid);
                     } else {
                         Label err = new Label("❌ Error: Failed to read card UID.");
-                        err.setStyle("-fx-font-size: 16px; -fx-text-fill: #E74C3C;");
+                        err.setStyle("""
+                                    -fx-font-size: 24px;
+                                    -fx-font-weight: bold;
+                                    -fx-text-fill: #C62828;
+                                    -fx-background-color: #FFEBEE;
+                                    -fx-padding: 20 30;
+                                    -fx-background-radius: 10;
+                                    -fx-border-color: #C62828;
+                                    -fx-border-radius: 10;
+                                    -fx-border-width: 2;
+                                    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
+                                """);
                         setContent(err);
                         System.err.println("Error: Failed to read card UID.");
                     }
@@ -146,7 +182,18 @@ public class Dashboard extends BorderPane {
         infoBtn.setOnAction(e -> {
             // show immediate "waiting" UI
             Label waitLbl = new Label("📡 Present card to read info...");
-            waitLbl.setStyle("-fx-font-size:16px; -fx-text-fill:#2980B9;");
+            waitLbl.setStyle("""
+                        -fx-font-size: 24px;
+                        -fx-font-weight: bold;
+                        -fx-text-fill: #1565C0;
+                        -fx-background-color: #E3F2FD;
+                        -fx-padding: 20 30;
+                        -fx-background-radius: 10;
+                        -fx-border-color: #1565C0;
+                        -fx-border-radius: 10;
+                        -fx-border-width: 2;
+                        -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
+                    """);
             setContent(new StackPane(waitLbl));
 
             new Thread(() -> {
@@ -156,7 +203,18 @@ public class Dashboard extends BorderPane {
                 Platform.runLater(() -> {
                     if (rr == null || rr.uid == null) {
                         Label err = new Label("❌ No card read (timed out or error).");
-                        err.setStyle("-fx-font-size:16px; -fx-text-fill:#E74C3C;");
+                        err.setStyle("""
+                                    -fx-font-size: 24px;
+                                    -fx-font-weight: bold;
+                                    -fx-text-fill: #C62828;
+                                    -fx-background-color: #FFEBEE;
+                                    -fx-padding: 20 30;
+                                    -fx-background-radius: 10;
+                                    -fx-border-color: #C62828;
+                                    -fx-border-radius: 10;
+                                    -fx-border-width: 2;
+                                    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
+                                """);
                         setContent(new StackPane(err));
                         return;
                     }
@@ -209,25 +267,45 @@ public class Dashboard extends BorderPane {
 
                     // Create GridPane (Field | Value)
                     GridPane grid = new GridPane();
-                    grid.setVgap(8);
-                    grid.setHgap(12);
-                    grid.setPadding(new Insets(12));
+                    grid.setVgap(12);
+                    grid.setHgap(20);
+                    grid.setPadding(new Insets(20));
+                    grid.setStyle("""
+                                -fx-background-color: white;
+                                -fx-background-radius: 12;
+                                -fx-border-radius: 12;
+                                -fx-border-color: #E0E0E0;
+                                -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.08), 12, 0, 0, 2);
+                            """);
 
                     int row = 0;
                     for (Map.Entry<String, String> entry : map.entrySet()) {
                         Label k = new Label(entry.getKey() + ":");
-                        k.setStyle("-fx-font-weight:600;");
+                        k.setStyle("""
+                                    -fx-font-weight: bold;
+                                    -fx-font-size: 16px;
+                                    -fx-text-fill: #1976D2;
+                                """);
                         Label v = new Label(entry.getValue());
+                        v.setStyle("""
+                                    -fx-font-size: 16px;
+                                    -fx-text-fill: #212121;
+                                """);
                         v.setWrapText(true);
                         grid.add(k, 0, row);
                         grid.add(v, 1, row);
                         row++;
                     }
 
-                    VBox container = new VBox(8);
-                    container.setPadding(new Insets(8));
-                    Label header = new Label("Card Info");
-                    header.setStyle("-fx-font-size:18px; -fx-font-weight:600;");
+                    VBox container = new VBox(16);
+                    container.setPadding(new Insets(20));
+                    container.setStyle("-fx-background-color: #F5F5F5;");
+                    Label header = new Label("Card Information");
+                    header.setStyle("""
+                                -fx-font-size: 28px;
+                                -fx-font-weight: bold;
+                                -fx-text-fill: #1565C0;
+                            """);
                     container.getChildren().addAll(header, grid);
 
                     setContent(container); // your method that places the UI Node
@@ -250,7 +328,7 @@ public class Dashboard extends BorderPane {
 
     private void setContent(String text) {
         Text newText = new Text(text);
-        newText.setStyle("-fx-font-size: 18px; -fx-fill: #2C3E50;");
+        newText.setStyle("-fx-font-size: 20px; -fx-fill: #212121; -fx-font-weight: 600;");
         setContent(newText);
     }
 

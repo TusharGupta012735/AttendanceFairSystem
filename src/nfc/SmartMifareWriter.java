@@ -4,15 +4,7 @@ import javax.smartcardio.*;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Library-style SmartMifareWriter. Blocking methods to be called from a
- * background thread.
- *
- * Usage:
- * SmartMifareWriter.WriteResult r = SmartMifareWriter.writeText("Hello world");
- */
 public class SmartMifareWriter {
 
     private static final byte[][] COMMON_KEYS = new byte[][] {
@@ -77,6 +69,8 @@ public class SmartMifareWriter {
         String trimmed = text.trim();
         if (trimmed.isEmpty())
             throw new IllegalArgumentException("text is empty");
+
+        SmartMifareEraser.eraseMemory();
 
         TerminalFactory factory = TerminalFactory.getDefault();
         List<CardTerminal> terminals = factory.terminals().list();
