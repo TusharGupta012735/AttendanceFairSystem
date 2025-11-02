@@ -88,65 +88,7 @@ public class Dashboard extends BorderPane {
         setCenter(contentArea);
 
         // --- Button Actions (with animation) ---
-        attendanceBtn.setOnAction(e -> {
-            // show waiting message
-            Label status = new Label("📡 Waiting for card...");
-            status.setStyle("""
-                        -fx-font-size: 24px;
-                        -fx-font-weight: bold;
-                        -fx-text-fill: #1565C0;
-                        -fx-background-color: #E3F2FD;
-                        -fx-padding: 20 30;
-                        -fx-background-radius: 10;
-                        -fx-border-color: #1565C0;
-                        -fx-border-radius: 10;
-                        -fx-border-width: 2;
-                        -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
-                    """);
-            setContent(status);
-
-            // read UID in a background thread
-            new Thread(() -> {
-                String uid = SmartMifareReader.readUID(); // <-- using your provided method
-                System.out.println("Read UID: " + uid);
-                // update UI on the JavaFX Application Thread
-                javafx.application.Platform.runLater(() -> {
-                    if (uid != null && !uid.isEmpty()) {
-                        Label success = new Label("✅ Attendance marked for uuid : " + uid);
-                        success.setStyle("""
-                                    -fx-font-size: 24px;
-                                    -fx-font-weight: bold;
-                                    -fx-text-fill: #2E7D32;
-                                    -fx-background-color: #E8F5E9;
-                                    -fx-padding: 20 30;
-                                    -fx-background-radius: 10;
-                                    -fx-border-color: #2E7D32;
-                                    -fx-border-radius: 10;
-                                    -fx-border-width: 2;
-                                    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
-                                """);
-                        setContent(success);
-                        System.out.println("Attendance marked for UID: " + uid);
-                    } else {
-                        Label err = new Label("❌ Error: Failed to read card UID.");
-                        err.setStyle("""
-                                    -fx-font-size: 24px;
-                                    -fx-font-weight: bold;
-                                    -fx-text-fill: #C62828;
-                                    -fx-background-color: #FFEBEE;
-                                    -fx-padding: 20 30;
-                                    -fx-background-radius: 10;
-                                    -fx-border-color: #C62828;
-                                    -fx-border-radius: 10;
-                                    -fx-border-width: 2;
-                                    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 10, 0, 0, 2);
-                                """);
-                        setContent(err);
-                        System.err.println("Error: Failed to read card UID.");
-                    }
-                });
-            }).start();
-        });
+        attendanceBtn.setOnAction(e -> setContent(AttendancePage.create()));
 
         entryFormBtn.setOnAction(e -> {
             Parent form = EntryForm.create(formData -> {
@@ -175,7 +117,6 @@ public class Dashboard extends BorderPane {
                     }
                 }, "writer-thread").start();
             });
-
             setContent(form);
         });
 

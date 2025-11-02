@@ -1,18 +1,27 @@
 package ui;
 
+import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.beans.binding.DoubleBinding;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Parent;
+import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.stage.Window;
+import nfc.SmartMifareReader;
 
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 public class EntryForm {
@@ -208,6 +217,15 @@ public class EntryForm {
         // Force evaluate font binding once
         fontSizeBinding.getValue();
 
+        // Start NFC auto-fill (false = don't overwrite existing fields; 1000ms poll)
+        startNfcAutoFill(root,
+                fullName, bsguid, participationType,
+                bsgDistrict, email, phoneNumber,
+                bsgState, memberTyp, unitNam,
+                rank_or_section, dataOfBirth, age,
+                false, // overwriteAlways
+                1000);
+
         return root;
     }
 
@@ -217,5 +235,132 @@ public class EntryForm {
         GridPane.setConstraints(lbl, 0, row);
         GridPane.setConstraints(field, 1, row);
         grid.getChildren().addAll(lbl, field);
+    }
+
+    // ---------------- NFC auto-fill helpers ----------------
+    private static ScheduledExecutorService startNfcAutoFill(
+            Parent root,
+            TextField fullName, TextField bsguid, ComboBox<String> participationType,
+            TextField bsgDistrict, TextField email, TextField phoneNumber,
+            TextField bsgState, TextField memberTyp, TextField unitNam,
+            ComboBox<String> rank_or_section, DatePicker dataOfBirth, TextField age,
+            boolean overwriteAlways, long pollIntervalMs) {
+
+        ScheduledExecutorService svc = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "nfc-poller");
+            t.setDaemon(true);
+            return t;
+        });
+
+        AtomicReference<String> lastUid = new AtomicReference<>("");
+
+        Runnable task = () -> {
+            try {
+                SmartMifareReader.ReadResult rr = SmartMifareReader.readUIDWithData(3000);
+                if (rr == null || rr.uid == null || rr.uid.isEmpty())
+                    return;
+
+                String uid = rr.uid;
+                String data = rr.data == null ? "" : rr.data.trim();
+
+                // debounce: ignore if same UID processed recently
+                if (uid.equals(lastUid.get()))
+                    return;
+                lastUid.set(uid);
+
+                if (data.isEmpty())
+                    return;
+
+                // split preserving empty segments
+                String[] parts = Arrays.stream(data.split(",", -1))
+                        .map(String::trim)
+                        .toArray(String[]::new);
+
+                Platform.runLater(() -> {
+                    try {
+                        int i = 0;
+                        setFieldFromCsv(fullName, parts, i++, overwriteAlways);
+                        setFieldFromCsv(bsguid, parts, i++, overwriteAlways);
+                        setComboFromCsv(participationType, parts, i++, overwriteAlways);
+                        setFieldFromCsv(bsgDistrict, parts, i++, overwriteAlways);
+                        setFieldFromCsv(email, parts, i++, overwriteAlways);
+                        setFieldFromCsv(phoneNumber, parts, i++, overwriteAlways);
+                        setFieldFromCsv(bsgState, parts, i++, overwriteAlways);
+                        setFieldFromCsv(memberTyp, parts, i++, overwriteAlways);
+                        setFieldFromCsv(unitNam, parts, i++, overwriteAlways);
+                        setComboFromCsv(rank_or_section, parts, i++, overwriteAlways);
+
+                        if (parts.length > i) {
+                            String dobStr = parts[i++].trim();
+                            if (!dobStr.isEmpty()) {
+                                try {
+                                    LocalDate d = LocalDate.parse(dobStr);
+                                    if (overwriteAlways || dataOfBirth.getValue() == null)
+                                        dataOfBirth.setValue(d);
+                                } catch (Exception ex) {
+                                    // ignore parse error
+                                }
+                            }
+                        }
+
+                        if (parts.length > i) {
+                            setFieldFromCsv(age, parts, i++, overwriteAlways);
+                        }
+
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                });
+
+            } catch (Exception ex) {
+                // keep polling even if one read fails
+                ex.printStackTrace();
+            }
+        };
+
+        svc.scheduleWithFixedDelay(task, 0, Math.max(200, pollIntervalMs), TimeUnit.MILLISECONDS);
+
+        // shutdown when window closes
+        root.sceneProperty().addListener((obs, oldScene, newScene) -> {
+            if (newScene != null) {
+                Window w = newScene.getWindow();
+                if (w != null) {
+                    w.setOnHidden(evt -> svc.shutdownNow());
+                } else {
+                    newScene.windowProperty().addListener((o, oldW, newW) -> {
+                        if (newW != null)
+                            newW.setOnHidden(e -> svc.shutdownNow());
+                    });
+                }
+            }
+        });
+
+        return svc;
+    }
+
+    private static void setFieldFromCsv(TextField tf, String[] parts, int idx, boolean overwriteAlways) {
+        if (idx < 0 || idx >= parts.length)
+            return;
+        String v = parts[idx];
+        if (v == null)
+            return;
+        if (overwriteAlways || tf.getText() == null || tf.getText().isEmpty()) {
+            tf.setText(v);
+        }
+    }
+
+    private static void setComboFromCsv(ComboBox<String> cb, String[] parts, int idx, boolean overwriteAlways) {
+        if (idx < 0 || idx >= parts.length)
+            return;
+        String v = parts[idx];
+        if (v == null || v.isEmpty())
+            return;
+        if (cb.getItems().contains(v)) {
+            if (overwriteAlways || cb.getValue() == null)
+                cb.setValue(v);
+        } else {
+            // if you want to accept arbitrary values into the combo box, uncomment:
+            // cb.setValue(v);
+        }
     }
 }
