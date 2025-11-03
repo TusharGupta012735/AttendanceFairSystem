@@ -5,29 +5,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
 
-/**
- * SmartMifareWriter — improved writer that first discovers ALL authenticated
- * writable
- * blocks, checks capacity for the data to write, then writes sequentially
- * across
- * discovered blocks (skipping sector trailers).
- *
- * Designed for MIFARE Classic 1K (blocks 0..63). Uses reader key slot (FF 82)
- * + authentication (FF 86) + block read (FF B0) + block write (FF D6).
- *
- * Safety: never writes trailer blocks (b % 4 == 3).
- *
- * Usage: SmartMifareWriter.writeText(text);
- */
 public class SmartMifareWriter {
 
     private static final byte[][] COMMON_KEYS = new byte[][] {
             hex("FFFFFFFFFFFF"),
-            hex("A0A1A2A3A4A5"),
-            hex("D3F7D3F7D3F7"),
             hex("000000000000"),
-            hex("AABBCCDDEEFF"),
-            hex("4D3A99C351DD")
     };
     private static final int KEY_SLOT = 0x00;
 
@@ -104,10 +86,8 @@ public class SmartMifareWriter {
             byte[] payload = trimmed.getBytes(StandardCharsets.UTF_8);
             List<byte[]> chunks = chunkBytes(payload, 16);
 
-            // DISCOVERY PASS: find all blocks we can authenticate and write to (skip
-            // trailers)
+            // DISCOVERY PASS: find all blocks we can authenticate and write to 
             // We record for each discovered block: block index and the keyType that worked
-            // (0x60 or 0x61).
             List<BlockAuth> writableBlocks = discoverWritableBlocks(channel);
             System.out.println("DEBUG: discovered writable blocks count=" + writableBlocks.size());
 

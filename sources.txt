@@ -1,6 +1,5 @@
 C:\Users\kamal\Desktop\attendance-fair-system\src\Main.java
 C:\Users\kamal\Desktop\attendance-fair-system\src\db\AccessDb.java
-C:\Users\kamal\Desktop\attendance-fair-system\src\nfc\AccessDb.java
 C:\Users\kamal\Desktop\attendance-fair-system\src\nfc\SmartMifareEraser.java
 C:\Users\kamal\Desktop\attendance-fair-system\src\nfc\SmartMifareReader.java
 C:\Users\kamal\Desktop\attendance-fair-system\src\nfc\SmartMifareWriter.java

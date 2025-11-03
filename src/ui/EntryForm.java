@@ -15,9 +15,7 @@ import nfc.SmartMifareReader;
 import nfc.SmartMifareEraser;
 
 import java.time.LocalDate;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -27,9 +25,9 @@ import java.util.function.BiConsumer;
 public class EntryForm {
 
     /**
-     * Note: onSave is now a BiConsumer where the second parameter is a Runnable
-     * `done` that the caller MUST run (on any thread) when the save/write
-     * operation finishes.
+     * Note: onSave is a BiConsumer where the second parameter is a Runnable `done`
+     * that the caller MUST run (on any thread) when the save/write operation
+     * finishes.
      */
     public static Parent create(BiConsumer<Map<String, String>, Runnable> onSave) {
 
@@ -44,7 +42,6 @@ public class EntryForm {
         header.setAlignment(Pos.CENTER_LEFT);
         header.setPadding(new Insets(0, 0, 12, 0));
 
-        // Base styles (will be updated dynamically)
         String baseStyleCore = "-fx-background-color: white; -fx-border-color: #bdbdbd; -fx-border-radius: 6; " +
                 "-fx-background-radius: 6; -fx-padding: 8 10; -fx-text-fill: #212121;";
         String labelBaseStyleCore = "-fx-font-weight:600; -fx-text-fill:#212121;";
@@ -187,7 +184,6 @@ public class EntryForm {
             }
 
             // ------------------ BUILD CLEAN MAP + CSV FOR NFC ------------------
-            // Clean values (no trailing commas) for DB
             String fullNameVal = fullName.getText() == null ? "" : fullName.getText().trim();
             String bsguidVal = bsguid.getText() == null ? "" : bsguid.getText().trim();
             String participationVal = participationType.getValue() == null ? "" : participationType.getValue().trim();
@@ -216,7 +212,6 @@ public class EntryForm {
             data.put("dataOfBirth", dobStr);
             data.put("age", ageVal);
 
-            // CSV explicitly for NFC (preserve empty segments)
             String csvForNfc = String.join(",",
                     Arrays.asList(
                             fullNameVal,
@@ -232,7 +227,6 @@ public class EntryForm {
                             dobStr,
                             ageVal));
 
-            // Put CSV into the map under reserved key so callers (onSave) can use it
             data.put("__CSV__", csvForNfc);
             // -------------------------------------------------------------------
 
@@ -244,8 +238,6 @@ public class EntryForm {
             status.setText("Submitting... hold card to update (if writing to card).");
 
             if (onSave != null) {
-                // Provide a done Runnable that re-enables buttons (caller should call it when
-                // finished)
                 Runnable done = () -> Platform.runLater(() -> {
                     saveBtn.setDisable(false);
                     clearBtn.setDisable(false);
@@ -262,7 +254,6 @@ public class EntryForm {
                     status.setText("❌ Submit failed: " + ex.getMessage());
                 }
             } else {
-                // No callback provided, re-enable
                 saveBtn.setDisable(false);
                 clearBtn.setDisable(false);
                 eraseBtn.setDisable(false);
@@ -290,7 +281,6 @@ public class EntryForm {
 
         // Erase Card action (runs on background thread)
         eraseBtn.setOnAction(evt -> {
-            // Confirm destructive action
             Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
                     "This will overwrite (erase) writable data on the presented MIFARE Classic 1K card for sectors\n" +
                             "the reader can authenticate. Make sure you own the card and want to proceed.\n\nContinue?",
@@ -299,15 +289,12 @@ public class EntryForm {
             confirm.showAndWait().ifPresent(btn -> {
                 if (btn != ButtonType.OK)
                     return;
-
-                // Disable primary buttons while erasing
                 saveBtn.setDisable(true);
                 clearBtn.setDisable(true);
                 eraseBtn.setDisable(true);
                 status.setStyle("-fx-text-fill:#424242;");
                 status.setText("Waiting for card and erasing... (present card to reader)");
 
-                // Run erase on background thread — eraseMemory blocks while waiting for card
                 Thread th = new Thread(() -> {
                     try {
                         SmartMifareEraser.eraseMemory();
@@ -334,7 +321,6 @@ public class EntryForm {
             });
         });
 
-        // Force evaluate font binding once
         fontSizeBinding.getValue();
 
         // Start NFC auto-fill (false = don't overwrite existing fields; 1000ms poll)
@@ -391,7 +377,6 @@ public class EntryForm {
                 if (data.isEmpty())
                     return;
 
-                // split preserving empty segments
                 String[] parts = Arrays.stream(data.split(",", -1))
                         .map(String::trim)
                         .toArray(String[]::new);
@@ -418,8 +403,7 @@ public class EntryForm {
                                     if (overwriteAlways || dataOfBirth.getValue() == null)
                                         dataOfBirth.setValue(d);
                                 } catch (Exception ex) {
-                                    // ignore parse error
-                                }
+                                    /* ignore parse error */ }
                             }
                         }
 
@@ -433,7 +417,6 @@ public class EntryForm {
                 });
 
             } catch (Exception ex) {
-                // keep polling even if one read fails
                 ex.printStackTrace();
             }
         };
@@ -479,8 +462,263 @@ public class EntryForm {
             if (overwriteAlways || cb.getValue() == null)
                 cb.setValue(v);
         } else {
-            // if you want to accept arbitrary values into the combo box, uncomment:
+            // optionally accept arbitrary values:
             // cb.setValue(v);
         }
     }
+
+    // ---------------- Batch entry UI ----------------
+    /**
+     * Create a batch UI which shows rows provided as List<Map<String,String>>
+     * and lets the user accept/write them to NFC one-by-one.
+     */
+    public static Parent createBatch(BiConsumer<Map<String, String>, Runnable> onSave,
+            List<Map<String, String>> batchRows) {
+        BorderPane root = new BorderPane();
+        root.setPadding(new Insets(14));
+        root.setStyle("-fx-background-color: linear-gradient(to bottom, #ffffff, #f7f9fb);");
+
+        Label title = new Label("📂 Batch Upload");
+        title.setFont(Font.font("System", FontWeight.BOLD, 20));
+        HBox header = new HBox(title);
+        header.setAlignment(Pos.CENTER_LEFT);
+        header.setPadding(new Insets(0, 0, 10, 0));
+
+        // reuse fields (simplified layout)
+        TextField fullName = new TextField();
+        TextField bsguid = new TextField();
+        ComboBox<String> participationType = new ComboBox<>();
+        participationType.getItems().addAll("guide", "scout", "ranger");
+        TextField bsgDistrict = new TextField();
+        TextField email = new TextField();
+        TextField phoneNumber = new TextField();
+        TextField bsgState = new TextField();
+        TextField memberTyp = new TextField();
+        TextField unitNam = new TextField();
+        ComboBox<String> rank_or_section = new ComboBox<>();
+        rank_or_section.getItems().addAll("guide", "scout", "ranger");
+        DatePicker dataOfBirth = new DatePicker();
+        TextField age = new TextField();
+
+        GridPane left = new GridPane();
+        left.setHgap(10);
+        left.setVgap(10);
+        GridPane right = new GridPane();
+        right.setHgap(10);
+        right.setVgap(10);
+
+        addField(left, 0, "FullName", fullName);
+        addField(left, 1, "BSGUID", bsguid);
+        addField(left, 2, "ParticipationType", participationType);
+        addField(left, 3, "bsgDistrict", bsgDistrict);
+        addField(left, 4, "unitNam", unitNam);
+        addField(left, 5, "dataOfBirth", dataOfBirth);
+
+        addField(right, 0, "Email", email);
+        addField(right, 1, "phoneNumber", phoneNumber);
+        addField(right, 2, "bsgState", bsgState);
+        addField(right, 3, "memberTyp", memberTyp);
+        addField(right, 4, "rank_or_section", rank_or_section);
+        addField(right, 5, "age", age);
+
+        HBox columns = new HBox(40, left, right);
+        columns.setPadding(new Insets(8));
+
+        Label status = new Label();
+        status.setWrapText(true);
+
+        Button writeNextBtn = new Button("Write & Next");
+        Button skipBtn = new Button("Skip / Next");
+        Button stopBtn = new Button("Stop Batch");
+        HBox controls = new HBox(10, writeNextBtn, skipBtn, stopBtn);
+        controls.setAlignment(Pos.CENTER_RIGHT);
+
+        VBox center = new VBox(12, header, columns, status, controls);
+        center.setPadding(new Insets(10));
+        root.setCenter(center);
+
+        final int total = batchRows == null ? 0 : batchRows.size();
+        final int[] index = new int[] { 0 };
+        final boolean[] running = new boolean[] { true };
+
+        // helper to pick a value from map by likely keys (case-insensitive)
+        java.util.function.BiFunction<Map<String, String>, String, String> pick = (map, key) -> {
+            if (map == null)
+                return "";
+            if (map.containsKey(key))
+                return map.get(key);
+            for (String k : map.keySet())
+                if (k.equalsIgnoreCase(key))
+                    return map.get(k);
+            return "";
+        };
+
+        Runnable fillCurrent = () -> {
+            if (index[0] < 0 || index[0] >= total) {
+                fullName.clear();
+                bsguid.clear();
+                participationType.setValue(null);
+                bsgDistrict.clear();
+                email.clear();
+                phoneNumber.clear();
+                bsgState.clear();
+                memberTyp.clear();
+                unitNam.clear();
+                rank_or_section.setValue(null);
+                dataOfBirth.setValue(null);
+                age.clear();
+                return;
+            }
+            Map<String, String> cur = batchRows.get(index[0]);
+            fullName.setText(pick.apply(cur, "FullName"));
+            bsguid.setText(pick.apply(cur, "BSGUID"));
+            String p = pick.apply(cur, "ParticipationType");
+            if (!p.isEmpty())
+                participationType.setValue(p);
+            bsgDistrict.setText(pick.apply(cur, "bsgDistrict"));
+            email.setText(pick.apply(cur, "Email"));
+            phoneNumber.setText(pick.apply(cur, "phoneNumber"));
+            bsgState.setText(pick.apply(cur, "bsgState"));
+            memberTyp.setText(pick.apply(cur, "memberTyp"));
+            unitNam.setText(pick.apply(cur, "unitNam"));
+            String r = pick.apply(cur, "rank_or_section");
+            if (!r.isEmpty())
+                rank_or_section.setValue(r);
+            String dob = pick.apply(cur, "dataOfBirth");
+            if (dob != null && !dob.isEmpty()) {
+                try {
+                    dataOfBirth.setValue(LocalDate.parse(dob));
+                } catch (Exception ex) {
+                    dataOfBirth.setValue(null);
+                }
+            } else {
+                dataOfBirth.setValue(null);
+            }
+            age.setText(pick.apply(cur, "age"));
+            status.setText("Record " + (index[0] + 1) + " / " + total);
+        };
+
+        if (total == 0) {
+            status.setText("No rows found in uploaded file.");
+            writeNextBtn.setDisable(true);
+            skipBtn.setDisable(true);
+            stopBtn.setDisable(true);
+        } else {
+            fillCurrent.run();
+        }
+
+        writeNextBtn.setOnAction(evt -> {
+            if (!running[0])
+                return;
+            if (index[0] < 0 || index[0] >= total) {
+                status.setText("No more rows.");
+                return;
+            }
+            Map<String, String> cur = batchRows.get(index[0]);
+
+            // Build map in same format create(...) expects
+            Map<String, String> data = new LinkedHashMap<>();
+            String fn = pick.apply(cur, "FullName");
+            String bs = pick.apply(cur, "BSGUID");
+            String pt = pick.apply(cur, "ParticipationType");
+            String bd = pick.apply(cur, "bsgDistrict");
+            String em = pick.apply(cur, "Email");
+            String ph = pick.apply(cur, "phoneNumber");
+            String st = pick.apply(cur, "bsgState");
+            String mt = pick.apply(cur, "memberTyp");
+            String un = pick.apply(cur, "unitNam");
+            String rk = pick.apply(cur, "rank_or_section");
+            String dob = pick.apply(cur, "dataOfBirth");
+            String ag = pick.apply(cur, "age");
+
+            data.put("FullName", fn);
+            data.put("BSGUID", bs);
+            data.put("ParticipationType", pt);
+            data.put("bsgDistrict", bd);
+            data.put("Email", em);
+            data.put("phoneNumber", ph);
+            data.put("bsgState", st);
+            data.put("memberTyp", mt);
+            data.put("unitNam", un);
+            data.put("rank_or_section", rk);
+            data.put("dataOfBirth", dob);
+            data.put("age", ag);
+
+            String csv = String.join(",", Arrays.asList(fn, bs, pt, bd, em, ph, st, mt, un, rk, dob, ag));
+            data.put("__CSV__", csv);
+
+            // disable buttons while saving
+            writeNextBtn.setDisable(true);
+            skipBtn.setDisable(true);
+            stopBtn.setDisable(true);
+            status.setText("Writing record " + (index[0] + 1) + " / " + total + " — present card now...");
+
+            Runnable done = () -> Platform.runLater(() -> {
+                index[0]++;
+                if (!running[0] || index[0] >= total) {
+                    status.setText("Batch finished. Processed " + Math.min(total, index[0]) + " rows.");
+                    writeNextBtn.setDisable(true);
+                    skipBtn.setDisable(true);
+                    stopBtn.setDisable(true);
+                } else {
+                    fillCurrent.run();
+                    writeNextBtn.setDisable(false);
+                    skipBtn.setDisable(false);
+                    stopBtn.setDisable(false);
+                    status.setText("Ready for record " + (index[0] + 1) + " / " + total
+                            + ". Present card and click Write & Next.");
+                }
+            });
+
+            try {
+                if (onSave != null) {
+                    onSave.accept(data, done);
+                } else {
+                    // immediate advance if no handler
+                    done.run();
+                }
+            } catch (Exception ex) {
+                Platform.runLater(() -> {
+                    status.setText("Write failed: " + ex.getMessage());
+                    writeNextBtn.setDisable(false);
+                    skipBtn.setDisable(false);
+                    stopBtn.setDisable(false);
+                });
+            }
+        });
+
+        skipBtn.setOnAction(evt -> {
+            if (!running[0])
+                return;
+            index[0]++;
+            if (index[0] >= total) {
+                status.setText("Reached end of batch.");
+                writeNextBtn.setDisable(true);
+                skipBtn.setDisable(true);
+            } else {
+                fillCurrent.run();
+                status.setText("Skipped. Now at " + (index[0] + 1) + " / " + total);
+            }
+        });
+
+        stopBtn.setOnAction(evt -> {
+            running[0] = false;
+            status.setText("Batch stopped by user. Processed " + index[0] + " rows.");
+            writeNextBtn.setDisable(true);
+            skipBtn.setDisable(true);
+            stopBtn.setDisable(true);
+        });
+
+        // Add a lightweight auto-fill from NFC while batch is active (optional)
+        startNfcAutoFill(root,
+                fullName, bsguid, participationType,
+                bsgDistrict, email, phoneNumber,
+                bsgState, memberTyp, unitNam,
+                rank_or_section, dataOfBirth, age,
+                false, // overwriteAlways
+                1200);
+
+        return root;
+    }
+
 }

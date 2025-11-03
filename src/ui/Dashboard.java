@@ -1,17 +1,18 @@
 package ui;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.io.File;
+import java.util.*;
 import java.util.stream.Collectors;
 
-import db.AccessDb; // the helper class above
+import db.AccessDb; // your DB helper
 import nfc.SmartMifareWriter;
+import nfc.SmartMifareReader;
 import javafx.application.Platform;
 import javafx.scene.Parent;
+
 import javafx.animation.FadeTransition;
 import javafx.geometry.Insets;
+import javafx.stage.FileChooser;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
@@ -19,8 +20,9 @@ import javafx.scene.control.Label;
 import javafx.scene.layout.*;
 import javafx.scene.text.Text;
 import javafx.util.Duration;
-import nfc.SmartMifareReader;
 import javafx.scene.Node;
+
+import util.CsvReader;
 
 public class Dashboard extends BorderPane {
 
@@ -31,7 +33,7 @@ public class Dashboard extends BorderPane {
         Button attendanceBtn = new Button("Attendance");
         Button entryFormBtn = new Button("Entry Form");
         Button infoBtn = new Button("Information");
-        Button autoUploadBtn = new Button("Auto Upload");
+        Button autoUploadBtn = new Button("Upload CSV"); // repurposed to upload CSV
         Button reportBtn = new Button("Report");
 
         // --- Common Button Style ---
@@ -94,7 +96,6 @@ public class Dashboard extends BorderPane {
 
         entryFormBtn.setOnAction(e -> {
             Parent form = EntryForm.create((formData, done) -> {
-                // Run on background thread
                 new Thread(() -> {
                     long dbId = -1;
                     try {
@@ -121,7 +122,6 @@ public class Dashboard extends BorderPane {
                         System.out.println("[DEBUG] Building CSV data for card...");
                         String textToWrite = formData.get("__CSV__");
                         if (textToWrite == null) {
-                            // fallback to joining all values (preserve field order used by EntryForm)
                             textToWrite = formData.values().stream()
                                     .map(v -> v == null ? "" : v.trim())
                                     .collect(Collectors.joining(","));
@@ -131,17 +131,16 @@ public class Dashboard extends BorderPane {
                         // 3) Write to NFC (this may block while waiting for a card)
                         try {
                             System.out.println("[DEBUG] Attempting to write to NFC card...");
-                            SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
+                            nfc.SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
                             if (result != null) {
                                 System.out.println("[DEBUG] Card write finished. Card UID: " + result.uid);
+                                // update DB with card UID if desired (omitted here)
                             } else {
                                 System.out.println("[WARN] Card write returned null result (no UID).");
                             }
                         } catch (Exception nfcEx) {
-                            // NFC failure is non-fatal — DB row is already saved
                             final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
                             System.err.println("[WARN] NFC write failed: " + nfcMsg);
-                            // notify UI but keep DB insert as successful
                             Platform.runLater(() -> {
                                 Alert warn = new Alert(Alert.AlertType.WARNING,
                                         "Saved to database, but writing to NFC card failed: " + nfcMsg,
@@ -149,12 +148,10 @@ public class Dashboard extends BorderPane {
                                 warn.setHeaderText(null);
                                 warn.showAndWait();
                             });
-                            // return here would skip the final success dialog — we continue so user sees DB
-                            // success
                         }
 
                         // 4) Notify success on UI thread
-                        final String okMsg = "Saved successfully to database.";
+                        final String okMsg = "Saved successfully to database. (id=" + dbId + ")";
                         Platform.runLater(() -> {
                             Alert ok = new Alert(Alert.AlertType.INFORMATION, okMsg, ButtonType.OK);
                             ok.setHeaderText(null);
@@ -162,17 +159,15 @@ public class Dashboard extends BorderPane {
                         });
 
                     } catch (Exception ex) {
-                        // Unexpected failure
                         final String err = ex.getMessage() == null ? ex.toString() : ex.getMessage();
                         System.out.println("[ERROR] Operation failed: " + err);
-                        ex.printStackTrace(); // Print full stack trace for debugging
+                        ex.printStackTrace();
                         Platform.runLater(() -> {
                             Alert a = new Alert(Alert.AlertType.ERROR, "Operation failed: " + err, ButtonType.OK);
                             a.setHeaderText(null);
                             a.showAndWait();
                         });
                     } finally {
-                        // ALWAYS call done to re-enable buttons
                         if (done != null)
                             done.run();
                     }
@@ -183,7 +178,6 @@ public class Dashboard extends BorderPane {
         });
 
         infoBtn.setOnAction(e -> {
-            // show immediate "waiting" UI
             Label waitLbl = new Label("📡 Present card to read info...");
             waitLbl.setStyle("""
                         -fx-font-size: 24px;
@@ -200,7 +194,6 @@ public class Dashboard extends BorderPane {
             setContent(new StackPane(waitLbl));
 
             new Thread(() -> {
-                // blocking call off the UI thread (10s timeout)
                 SmartMifareReader.ReadResult rr = SmartMifareReader.readUIDWithData(10_000);
 
                 Platform.runLater(() -> {
@@ -222,14 +215,10 @@ public class Dashboard extends BorderPane {
                         return;
                     }
 
-                    // Build a simple Key / Value grid
                     Map<String, String> map = new LinkedHashMap<>();
                     map.put("UID", rr.uid);
-
                     String data = (rr.data == null) ? "" : rr.data.trim();
                     if (!data.isEmpty()) {
-                        // If data looks structured (contains '|' or ';' or ',' or ':'), try to parse
-                        // into key:value pairs
                         boolean parsed = false;
                         String[] items;
                         if (data.contains("|")) {
@@ -242,7 +231,6 @@ public class Dashboard extends BorderPane {
                             items = new String[] { data };
                         }
 
-                        // try split each item into key:value if possible
                         List<String> leftovers = new ArrayList<>();
                         for (String it : items) {
                             String s = it.trim();
@@ -259,7 +247,6 @@ public class Dashboard extends BorderPane {
                             }
                         }
                         if (!parsed) {
-                            // show whole readable data as one row
                             map.put("Readable data", data);
                         } else if (!leftovers.isEmpty()) {
                             map.put("Other data", String.join(" | ", leftovers));
@@ -268,7 +255,6 @@ public class Dashboard extends BorderPane {
                         map.put("Readable data", "(none)");
                     }
 
-                    // Create GridPane (Field | Value)
                     GridPane grid = new GridPane();
                     grid.setVgap(12);
                     grid.setHgap(20);
@@ -311,12 +297,101 @@ public class Dashboard extends BorderPane {
                             """);
                     container.getChildren().addAll(header, grid);
 
-                    setContent(container); // your method that places the UI Node
+                    setContent(container);
                 });
             }, "info-read-thread").start();
         });
 
-        autoUploadBtn.setOnAction(e -> setContent("⏫ Auto Upload Page"));
+        autoUploadBtn.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV Files", "*.csv"));
+            File f = chooser.showOpenDialog(this.getScene() == null ? null : this.getScene().getWindow());
+            if (f == null)
+                return;
+
+            List<Map<String, String>> rows;
+            try {
+                rows = CsvReader.readCsvAsMaps(f.toPath());
+            } catch (Exception ex) {
+                Platform.runLater(() -> {
+                    Alert a = new Alert(Alert.AlertType.ERROR, "Failed to read CSV: " + ex.getMessage(), ButtonType.OK);
+                    a.setHeaderText(null);
+                    a.showAndWait();
+                });
+                return;
+            }
+
+            Parent batch = EntryForm.createBatch((formData, done) -> {
+                // same onSave logic as single-entry
+                new Thread(() -> {
+                    long dbId = -1;
+                    try {
+                        // 1) insert DB
+                        try {
+                            dbId = AccessDb.insertAttendee(formData, null);
+                        } catch (Exception dbEx) {
+                            final String msg = "DB insert failed: " + dbEx.getMessage();
+                            Platform.runLater(() -> {
+                                Alert alert = new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK);
+                                alert.setHeaderText(null);
+                                alert.showAndWait();
+                            });
+                            if (done != null)
+                                done.run();
+                            return;
+                        }
+
+                        // 2) write to NFC
+                        String textToWrite = formData.get("__CSV__");
+                        if (textToWrite == null) {
+                            textToWrite = formData.values().stream()
+                                    .map(v -> v == null ? "" : v.trim())
+                                    .collect(Collectors.joining(","));
+                        }
+
+                        try {
+                            nfc.SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
+                            if (result != null) {
+                                System.out.println("[DEBUG] Card write UID: " + result.uid);
+                                // optional: update CardUID in DB here
+                            }
+                        } catch (Exception nfcEx) {
+                            final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
+                            Platform.runLater(() -> {
+                                Alert warn = new Alert(Alert.AlertType.WARNING,
+                                        "Saved to database, but writing to NFC card failed: " + nfcMsg,
+                                        ButtonType.OK);
+                                warn.setHeaderText(null);
+                                warn.showAndWait();
+                            });
+                        }
+
+                        // Use final local variable for lambda capture
+                        final long savedId = dbId;
+                        Platform.runLater(() -> {
+                            Alert ok = new Alert(Alert.AlertType.INFORMATION, "Saved to DB (id=" + savedId + ")",
+                                    ButtonType.OK);
+                            ok.setHeaderText(null);
+                            ok.showAndWait();
+                        });
+
+                    } catch (Exception ex) {
+                        final String err = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                        Platform.runLater(() -> {
+                            Alert a = new Alert(Alert.AlertType.ERROR, "Write failed: " + err, ButtonType.OK);
+                            a.setHeaderText(null);
+                            a.showAndWait();
+                        });
+                    } finally {
+                        if (done != null)
+                            done.run();
+                    }
+                }, "writer-db-thread").start();
+            }, rows);
+
+            setContent(batch);
+        });
+
         reportBtn.setOnAction(e -> setContent("📊 Report Page"));
     }
 

@@ -21,7 +21,7 @@ import java.util.*;
  */
 public class AccessDb {
 
-    private static final String DB_FILE_PATH = "C:/Users/kamal/Documents/Database1.accdb";
+    private static final String DB_FILE_PATH = "C:/Users/kamal/Documents/bsd.accdb";
     private static final String CONN_URL = "jdbc:ucanaccess://" + DB_FILE_PATH;
 
     public static Connection getConnection() throws SQLException {

@@ -4,16 +4,12 @@ import javax.smartcardio.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
 public class SmartMifareReader {
 
     // Simple debounce map to avoid immediate duplicates when calling repeatedly
-    // from UI loops.
     private static final ConcurrentHashMap<String, Long> lastSeen = new ConcurrentHashMap<>();
     private static final long DEBOUNCE_MS = 500; // ignore duplicates within 500ms
-
-    // --- Public API used by your JavaFX frontend ---
 
     /**
      * Read UID with default 20s timeout. Returns UID (hex, upper-case, no spaces)
@@ -22,24 +18,21 @@ public class SmartMifareReader {
     public static String readUID() {
         return readUID(20_000);
     }
-
-    /**
+    /*
      * Read UID, blocking up to timeoutMs milliseconds. Returns UID (hex) or null.
      */
     public static String readUID(long timeoutMs) {
         ReadResult r = readUIDWithData(timeoutMs);
         return (r == null) ? null : r.uid;
     }
-
-    /**
+    /*
      * Read UID + attempt to read printable data. Default timeout 20s. Returns
      * ReadResult or null on timeout/error.
      */
     public static ReadResult readUIDWithData() {
         return readUIDWithData(20_000);
     }
-
-    /**
+    /*
      * Read UID and some readable data. Blocks up to timeoutMs milliseconds waiting
      * for a card.
      * Returns a ReadResult (uid non-null) or null if timed out / no reader / error.
@@ -65,7 +58,6 @@ public class SmartMifareReader {
             }
 
             if (!present) {
-                // timed out waiting for card
                 return null;
             }
 
@@ -93,6 +85,7 @@ public class SmartMifareReader {
                     // indicate "ignored".
                     // We'll return uid here (so behavior matches a straightforward read); adjust if
                     // you prefer ignoring.
+                    return null;
                 }
                 lastSeen.put(uid, now);
 
@@ -140,17 +133,11 @@ public class SmartMifareReader {
         }
     }
 
-    // --- Internal helpers (mostly your original code, slightly refactored) ---
-
     private static String probeReadableData(CardChannel channel) {
         try {
             byte[][] commonKeys = new byte[][] {
                     hex("FFFFFFFFFFFF"),
-                    hex("A0A1A2A3A4A5"),
-                    hex("D3F7D3F7D3F7"),
                     hex("000000000000"),
-                    hex("AABBCCDDEEFF"),
-                    hex("4D3A99C351DD")
             };
 
             int keySlot = 0x00;
@@ -199,12 +186,10 @@ public class SmartMifareReader {
                 return readableData.toString().trim();
             }
         } catch (Exception e) {
-            // best-effort: on any error, return empty string
             return "";
         }
     }
 
-    // ---- original helper methods ----
     private static class AuthResult {
         boolean success;
         byte keyType;

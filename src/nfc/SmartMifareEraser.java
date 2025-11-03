@@ -3,25 +3,11 @@ package nfc;
 import javax.smartcardio.*;
 import java.util.*;
 
-/**
- * SmartMifareEraser (callable)
- *
- * Provides a library method eraseMemory() that waits for a card and erases
- * writable MIFARE Classic 1K data blocks (4..63) when it can authenticate
- * with one of the common keys.
- *
- * NOTE: This will irreversibly overwrite card data for sectors we can auth.
- * Call only on cards you own. Call on a background thread (blocking).
- */
 public class SmartMifareEraser {
 
     private static final byte[][] COMMON_KEYS = new byte[][] {
             hex("FFFFFFFFFFFF"),
-            hex("A0A1A2A3A4A5"),
-            hex("D3F7D3F7D3F7"),
             hex("000000000000"),
-            hex("AABBCCDDEEFF"),
-            hex("4D3A99C351DD")
     };
 
     private static final int KEY_SLOT = 0x00;
@@ -30,12 +16,10 @@ public class SmartMifareEraser {
      * Wait for a card to be presented (blocks indefinitely) and attempt to
      * overwrite all writable data blocks (4..63) with zeros for sectors that
      * can be authenticated using COMMON_KEYS.
-     *
      * This method is blocking and should NOT be called on the JavaFX UI thread.
      *
      * When the erase finishes the method returns immediately (no waiting for card
      * absent).
-     *
      * @throws Exception on fatal errors (no reader, card connect failure, etc.)
      */
     public static void eraseMemory() throws Exception {
@@ -58,7 +42,6 @@ public class SmartMifareEraser {
                 card.disconnect(false);
             } catch (Exception ignored) {
             }
-            // NOTE: intentionally NOT waiting for card absent so caller returns immediately
         }
     }
 
@@ -73,7 +56,6 @@ public class SmartMifareEraser {
     public static void eraseOnChannel(CardChannel channel) throws Exception {
         if (channel == null)
             throw new IllegalArgumentException("channel is null");
-
         byte[] zero16 = new byte[16];
 
         // iterate user blocks 4..63
@@ -83,7 +65,6 @@ public class SmartMifareEraser {
 
             boolean authed = false;
 
-            // try candidate keys
             for (byte[] candidate : COMMON_KEYS) {
                 boolean loaded = loadKey(channel, KEY_SLOT, candidate);
                 if (!loaded)
@@ -104,7 +85,6 @@ public class SmartMifareEraser {
             try {
                 writeBlock(channel, block, zero16);
             } catch (Exception ignored) {
-                // ignore per-block failures and continue
             }
         }
     }
@@ -175,14 +155,5 @@ public class SmartMifareEraser {
         for (int i = 0; i < len; i++)
             out[i] = (byte) Integer.parseInt(s.substring(2 * i, 2 * i + 2), 16);
         return out;
-    }
-
-    private static String bytesToHex(byte[] bytes) {
-        if (bytes == null || bytes.length == 0)
-            return "";
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes)
-            sb.append(String.format("%02X:", b));
-        return sb.length() > 0 ? sb.substring(0, sb.length() - 1) : "";
     }
 }
