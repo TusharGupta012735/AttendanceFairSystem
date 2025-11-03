@@ -6,10 +6,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import db.AccessDb; // the helper class above
+import nfc.SmartMifareWriter;
+import javafx.application.Platform;
+import javafx.scene.Parent;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import javafx.animation.FadeTransition;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
+import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.Label;
 import javafx.scene.layout.*;
 import javafx.scene.text.Text;
@@ -92,38 +101,76 @@ public class Dashboard extends BorderPane {
 
         entryFormBtn.setOnAction(e -> {
             Parent form = EntryForm.create((formData, done) -> {
-                // run writer on background thread
+                // Run on background thread
                 new Thread(() -> {
+                    long dbId = -1;
+                    String cardUid = null;
                     try {
-                        // build the CSV exactly as before (preserve empty tokens if you need)
-                        String textToWrite = formData.values().stream()
-                                .filter(v -> v != null && !v.trim().isEmpty())
-                                .collect(Collectors.joining(" "));
+                        // 1) Insert to DB first (so DB has a record even if card write fails)
+                        try {
+                            dbId = AccessDb.insertAttendee(formData, null); // cardUid=null for now
+                            System.out.println("DB inserted id=" + dbId);
+                        } catch (Exception dbEx) {
+                            // Decide policy: either fail the whole operation or continue to NFC write.
+                            // Here we fail the operation and show error to user.
+                            final String msg = "DB insert failed: " + dbEx.getMessage();
+                            Platform.runLater(() -> {
+                                // show a dialog or status label in your app
+                                Alert alert = new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK);
+                                alert.setHeaderText(null);
+                                alert.showAndWait();
+                            });
+                            return;
+                        }
 
+                        // 2) Build CSV / text to write to NFC
+                        String textToWrite = formData.values().stream()
+                                .map(v -> v == null ? "" : v.trim())
+                                .collect(Collectors.joining(","));
+
+                        // 3) Write to NFC (blocks discovery/writing handled inside SmartMifareWriter)
                         SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
 
+                        cardUid = result.uid; // store returned UID
+
+                        // 4) Update DB row with card UID (optional)
+                        if (dbId != -1) {
+                            // simple update query to write CardUID where Id = dbId
+                            try (java.sql.Connection c = db.AccessDb.getConnection();
+                                    java.sql.PreparedStatement ps = c
+                                            .prepareStatement("UPDATE Attendees SET CardUID=? WHERE Id=?")) {
+                                ps.setString(1, cardUid);
+                                ps.setLong(2, dbId);
+                                ps.executeUpdate();
+                            } catch (Exception updEx) {
+                                // non-fatal; log and continue
+                                System.err.println("Failed to update CardUID in DB: " + updEx.getMessage());
+                            }
+                        }
+
+                        // 5) Notify success on UI thread
+                        final String okMsg = "Saved. DB id=" + dbId + " Card UID=" + cardUid;
                         Platform.runLater(() -> {
-                            Label success = new Label("✅ Wrote to card UID: " + result.uid +
-                                    " blocks=" + result.blocks + " — saved locally.");
-                            success.setStyle("-fx-font-size:16px; -fx-text-fill: #27AE60;");
-                            // assuming setContent is a method that swaps content in your app
-                            setContent(success);
+                            Alert ok = new Alert(Alert.AlertType.INFORMATION, okMsg, ButtonType.OK);
+                            ok.setHeaderText(null);
+                            ok.showAndWait();
                         });
 
                     } catch (Exception ex) {
-                        ex.printStackTrace();
+                        // Write failed (or unexpected)
+                        final String err = ex.getMessage() == null ? ex.toString() : ex.getMessage();
                         Platform.runLater(() -> {
-                            Label err = new Label("❌ Write failed: " + ex.getMessage());
-                            err.setStyle("-fx-font-size:16px; -fx-text-fill: #E74C3C;");
-                            setContent(err);
+                            Alert a = new Alert(Alert.AlertType.ERROR, "Write failed: " + err, ButtonType.OK);
+                            a.setHeaderText(null);
+                            a.showAndWait();
                         });
+                        System.out.println("Error during write: " + err);
                     } finally {
-                        // signal EntryForm to re-enable the buttons (must run on FX thread)
-                        // 'done' can be called from any thread; EntryForm's done re-enables via
-                        // Platform.runLater
-                        done.run();
+                        // ALWAYS call done to re-enable buttons
+                        if (done != null)
+                            done.run();
                     }
-                }, "writer-thread").start();
+                }, "writer-db-thread").start();
             });
 
             setContent(form);

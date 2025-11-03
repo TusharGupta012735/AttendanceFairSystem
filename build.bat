@@ -1,37 +1,28 @@
 @echo off
-echo Building Attendance Fair System...
+setlocal enabledelayedexpansion
 
-REM Clean previous builds
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
+REM === CONFIGURATION ===
+set "JAVAFX_HOME=C:\javafx-sdk-21.0.9\lib"
+set "CP=lib/*;src"
 
-REM Create directories
-mkdir build
-mkdir dist
+REM === COMPILE ===
+echo Collecting source files...
+del sources.txt 2>nul
+for /r src %%f in (*.java) do (
+    echo %%f>>sources.txt
+)
+if not exist out mkdir out
 
-REM Compile
-echo Compiling Java files...
-javac -d build -cp "lib/*" src/**/*.java
+echo Compiling sources...
+javac -cp "%CP%" -d out @sources.txt
+if %errorlevel% neq 0 (
+    echo ❌ Compilation failed.
+    exit /b 1
+)
+echo ✅ Compilation successful.
 
-REM Create JAR
-echo Creating JAR file...
-cd build
-jar cvfe ../dist/AttendanceFairSystem.jar ui.Main .
-cd ..
+REM === RUN ===
+echo Running application...
+java --module-path "%JAVAFX_HOME%\lib" --add-modules javafx.controls,javafx.fxml -cp "out;lib/*" ui.Main
 
-REM Package as EXE
-echo Creating executable...
-jpackage --input dist ^
-         --main-jar AttendanceFairSystem.jar ^
-         --main-class ui.Main ^
-         --name AttendanceFairSystem ^
-         --app-version 1.0.0 ^
-         --dest dist ^
-         --win-dir-chooser ^
-         --win-menu ^
-         --win-shortcut ^
-         --description "Attendance Fair System with NFC Card Support" ^
-         --vendor "Your Organization Name" ^
-         --win-console
-
-echo Build complete! Check the dist folder for the installer.
+endlocal
