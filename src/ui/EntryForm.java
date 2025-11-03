@@ -28,15 +28,8 @@ public class EntryForm {
 
     /**
      * Note: onSave is now a BiConsumer where the second parameter is a Runnable
-     * `done`
-     * that the caller MUST run (on any thread) when the save/write operation
-     * finishes.
-     *
-     * Example:
-     * form = EntryForm.create((data, done) -> {
-     * new Thread(() -> { try { ...write... } finally { Platform.runLater(done); }
-     * }).start();
-     * });
+     * `done` that the caller MUST run (on any thread) when the save/write
+     * operation finishes.
      */
     public static Parent create(BiConsumer<Map<String, String>, Runnable> onSave) {
 
@@ -185,12 +178,6 @@ public class EntryForm {
         center.setPadding(new Insets(10));
         root.setCenter(center);
 
-        // Utility to set disabled state for primary buttons
-        Runnable setPrimaryButtonsDisabled = () -> {
-            // no-op placeholder so lambda below compiles; we'll use explicit calls where
-            // needed
-        };
-
         // Save action
         saveBtn.setOnAction(e -> {
             validation.setText("");
@@ -199,21 +186,55 @@ public class EntryForm {
                 return;
             }
 
-            Map<String, String> data = new LinkedHashMap<>();
-            data.put("FullName", fullName.getText() + ",");
-            data.put("BSGUID", bsguid.getText() + ",");
-            data.put("ParticipationType",
-                    participationType.getValue() == null ? "" : participationType.getValue() + ",");
-            data.put("bsgDistrict", bsgDistrict.getText() + ",");
-            data.put("Email", email.getText() + ",");
-            data.put("phoneNumber", phoneNumber.getText() + ",");
-            data.put("bsgState", bsgState.getText() + ",");
-            data.put("memberTyp", memberTyp.getText() + ",");
-            data.put("unitNam", unitNam.getText() + ",");
-            data.put("rank_or_section", rank_or_section.getValue() == null ? "" : rank_or_section.getValue() + ",");
+            // ------------------ BUILD CLEAN MAP + CSV FOR NFC ------------------
+            // Clean values (no trailing commas) for DB
+            String fullNameVal = fullName.getText() == null ? "" : fullName.getText().trim();
+            String bsguidVal = bsguid.getText() == null ? "" : bsguid.getText().trim();
+            String participationVal = participationType.getValue() == null ? "" : participationType.getValue().trim();
+            String bsgDistrictVal = bsgDistrict.getText() == null ? "" : bsgDistrict.getText().trim();
+            String emailVal = email.getText() == null ? "" : email.getText().trim();
+            String phoneVal = phoneNumber.getText() == null ? "" : phoneNumber.getText().trim();
+            String bsgStateVal = bsgState.getText() == null ? "" : bsgState.getText().trim();
+            String memberTypVal = memberTyp.getText() == null ? "" : memberTyp.getText().trim();
+            String unitNamVal = unitNam.getText() == null ? "" : unitNam.getText().trim();
+            String rankVal = rank_or_section.getValue() == null ? "" : rank_or_section.getValue().trim();
             LocalDate dobVal = dataOfBirth.getValue();
-            data.put("dataOfBirth", dobVal == null ? "" : dobVal.toString() + ",");
-            data.put("age", age.getText() + ",");
+            String dobStr = dobVal == null ? "" : dobVal.toString();
+            String ageVal = age.getText() == null ? "" : age.getText().trim();
+
+            Map<String, String> data = new LinkedHashMap<>();
+            data.put("FullName", fullNameVal);
+            data.put("BSGUID", bsguidVal);
+            data.put("ParticipationType", participationVal);
+            data.put("bsgDistrict", bsgDistrictVal);
+            data.put("Email", emailVal);
+            data.put("phoneNumber", phoneVal);
+            data.put("bsgState", bsgStateVal);
+            data.put("memberTyp", memberTypVal);
+            data.put("unitNam", unitNamVal);
+            data.put("rank_or_section", rankVal);
+            data.put("dataOfBirth", dobStr);
+            data.put("age", ageVal);
+
+            // CSV explicitly for NFC (preserve empty segments)
+            String csvForNfc = String.join(",",
+                    Arrays.asList(
+                            fullNameVal,
+                            bsguidVal,
+                            participationVal,
+                            bsgDistrictVal,
+                            emailVal,
+                            phoneVal,
+                            bsgStateVal,
+                            memberTypVal,
+                            unitNamVal,
+                            rankVal,
+                            dobStr,
+                            ageVal));
+
+            // Put CSV into the map under reserved key so callers (onSave) can use it
+            data.put("__CSV__", csvForNfc);
+            // -------------------------------------------------------------------
 
             // Disable buttons while save/write is in progress
             saveBtn.setDisable(true);
@@ -225,20 +246,15 @@ public class EntryForm {
             if (onSave != null) {
                 // Provide a done Runnable that re-enables buttons (caller should call it when
                 // finished)
-                Runnable done = () -> {
-                    // run on FX thread to re-enable UI
-                    Platform.runLater(() -> {
-                        saveBtn.setDisable(false);
-                        clearBtn.setDisable(false);
-                        eraseBtn.setDisable(false);
-                        // leave status as-is; caller can update status via Platform.runLater separately
-                    });
-                };
+                Runnable done = () -> Platform.runLater(() -> {
+                    saveBtn.setDisable(false);
+                    clearBtn.setDisable(false);
+                    eraseBtn.setDisable(false);
+                });
 
                 try {
                     onSave.accept(data, done);
                 } catch (Exception ex) {
-                    // If the caller throws synchronously, re-enable immediately and show error
                     saveBtn.setDisable(false);
                     clearBtn.setDisable(false);
                     eraseBtn.setDisable(false);

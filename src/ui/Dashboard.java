@@ -10,11 +10,7 @@ import db.AccessDb; // the helper class above
 import nfc.SmartMifareWriter;
 import javafx.application.Platform;
 import javafx.scene.Parent;
-import java.util.Map;
-import java.util.stream.Collectors;
-
 import javafx.animation.FadeTransition;
-import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -24,10 +20,7 @@ import javafx.scene.layout.*;
 import javafx.scene.text.Text;
 import javafx.util.Duration;
 import nfc.SmartMifareReader;
-import nfc.SmartMifareWriter;
 import javafx.scene.Node;
-import javafx.scene.Parent;
-import javafx.scene.paint.Color;
 
 public class Dashboard extends BorderPane {
 
@@ -104,18 +97,19 @@ public class Dashboard extends BorderPane {
                 // Run on background thread
                 new Thread(() -> {
                     long dbId = -1;
-                    String cardUid = null;
                     try {
-                        // 1) Insert to DB first (so DB has a record even if card write fails)
+                        System.out.println("\n[DEBUG] Starting form submission process...");
+                        System.out.println("[DEBUG] Form data: " + formData);
+
+                        // 1) Insert to DB first
                         try {
-                            dbId = AccessDb.insertAttendee(formData, null); // cardUid=null for now
-                            System.out.println("DB inserted id=" + dbId);
+                            System.out.println("[DEBUG] Attempting database insert...");
+                            dbId = AccessDb.insertAttendee(formData, null); // no card UID
+                            System.out.println("[DEBUG] Database insert successful, id=" + dbId);
                         } catch (Exception dbEx) {
-                            // Decide policy: either fail the whole operation or continue to NFC write.
-                            // Here we fail the operation and show error to user.
                             final String msg = "DB insert failed: " + dbEx.getMessage();
+                            System.err.println("[ERROR] " + msg);
                             Platform.runLater(() -> {
-                                // show a dialog or status label in your app
                                 Alert alert = new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK);
                                 alert.setHeaderText(null);
                                 alert.showAndWait();
@@ -124,32 +118,43 @@ public class Dashboard extends BorderPane {
                         }
 
                         // 2) Build CSV / text to write to NFC
-                        String textToWrite = formData.values().stream()
-                                .map(v -> v == null ? "" : v.trim())
-                                .collect(Collectors.joining(","));
+                        System.out.println("[DEBUG] Building CSV data for card...");
+                        String textToWrite = formData.get("__CSV__");
+                        if (textToWrite == null) {
+                            // fallback to joining all values (preserve field order used by EntryForm)
+                            textToWrite = formData.values().stream()
+                                    .map(v -> v == null ? "" : v.trim())
+                                    .collect(Collectors.joining(","));
+                        }
+                        System.out.println("[DEBUG] Data to write to card: " + textToWrite);
 
-                        // 3) Write to NFC (blocks discovery/writing handled inside SmartMifareWriter)
-                        SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
-
-                        cardUid = result.uid; // store returned UID
-
-                        // 4) Update DB row with card UID (optional)
-                        if (dbId != -1) {
-                            // simple update query to write CardUID where Id = dbId
-                            try (java.sql.Connection c = db.AccessDb.getConnection();
-                                    java.sql.PreparedStatement ps = c
-                                            .prepareStatement("UPDATE Attendees SET CardUID=? WHERE Id=?")) {
-                                ps.setString(1, cardUid);
-                                ps.setLong(2, dbId);
-                                ps.executeUpdate();
-                            } catch (Exception updEx) {
-                                // non-fatal; log and continue
-                                System.err.println("Failed to update CardUID in DB: " + updEx.getMessage());
+                        // 3) Write to NFC (this may block while waiting for a card)
+                        try {
+                            System.out.println("[DEBUG] Attempting to write to NFC card...");
+                            SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
+                            if (result != null) {
+                                System.out.println("[DEBUG] Card write finished. Card UID: " + result.uid);
+                            } else {
+                                System.out.println("[WARN] Card write returned null result (no UID).");
                             }
+                        } catch (Exception nfcEx) {
+                            // NFC failure is non-fatal — DB row is already saved
+                            final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
+                            System.err.println("[WARN] NFC write failed: " + nfcMsg);
+                            // notify UI but keep DB insert as successful
+                            Platform.runLater(() -> {
+                                Alert warn = new Alert(Alert.AlertType.WARNING,
+                                        "Saved to database, but writing to NFC card failed: " + nfcMsg,
+                                        ButtonType.OK);
+                                warn.setHeaderText(null);
+                                warn.showAndWait();
+                            });
+                            // return here would skip the final success dialog — we continue so user sees DB
+                            // success
                         }
 
-                        // 5) Notify success on UI thread
-                        final String okMsg = "Saved. DB id=" + dbId + " Card UID=" + cardUid;
+                        // 4) Notify success on UI thread
+                        final String okMsg = "Saved successfully to database.";
                         Platform.runLater(() -> {
                             Alert ok = new Alert(Alert.AlertType.INFORMATION, okMsg, ButtonType.OK);
                             ok.setHeaderText(null);
@@ -157,14 +162,15 @@ public class Dashboard extends BorderPane {
                         });
 
                     } catch (Exception ex) {
-                        // Write failed (or unexpected)
+                        // Unexpected failure
                         final String err = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                        System.out.println("[ERROR] Operation failed: " + err);
+                        ex.printStackTrace(); // Print full stack trace for debugging
                         Platform.runLater(() -> {
-                            Alert a = new Alert(Alert.AlertType.ERROR, "Write failed: " + err, ButtonType.OK);
+                            Alert a = new Alert(Alert.AlertType.ERROR, "Operation failed: " + err, ButtonType.OK);
                             a.setHeaderText(null);
                             a.showAndWait();
                         });
-                        System.out.println("Error during write: " + err);
                     } finally {
                         // ALWAYS call done to re-enable buttons
                         if (done != null)

@@ -2,31 +2,18 @@ package db;
 
 import java.sql.*;
 import java.time.Instant;
-import java.util.Map;
+import java.util.*;
 
 /**
  * AccessDb utility — targets the ParticipantsWrite table and matches the
  * EntryForm field order.
  *
- * Field order (EntryForm) -> DB columns:
- * FullName -> FullName (TEXT)
- * BSGUID -> BSGUID (TEXT)
- * ParticipationType -> ParticipationType (TEXT)
- * bsgDistrict -> BSGDistrict (TEXT)
- * Email -> Email (TEXT)
- * phoneNumber -> PhoneNumber (TEXT)
- * bsgState -> BSGState (TEXT)
- * memberTyp -> MemberType (TEXT)
- * unitNam -> UnitName (TEXT)
- * rank_or_section -> RankOrSection (TEXT)
- * dataOfBirth -> DateOfBirth (DATETIME)
- * age -> Age (TEXT)
- *
- * Additional columns:
- * CardUID -> CardUID (TEXT)
- * CreatedAt -> CreatedAt (DATETIME)
+ * Works safely when some columns (CardUID, CreatedAt) are missing by
+ * discovering
+ * actual table columns and building the INSERT accordingly.
  *
  * CLI:
+ * javac -cp "lib/*;src" -d out src\db\AccessDb.java
  * java -cp "out;lib/*" db.AccessDb list
  * java -cp "out;lib/*" db.AccessDb describe ParticipantsWrite
  * java -cp "out;lib/*" db.AccessDb create-participants
@@ -48,20 +35,13 @@ public class AccessDb {
         return DriverManager.getConnection(CONN_URL);
     }
 
-    /**
-     * Normalize incoming form value:
-     * - null -> null
-     * - trim whitespace
-     * - remove trailing commas that EntryForm may have appended
-     */
+    /** Trim and strip any trailing commas the UI might add. */
     private static String normalize(String s) {
         if (s == null)
             return null;
         String t = s.trim();
-        // remove all trailing commas and whitespace
-        while (t.endsWith(",")) {
+        while (t.endsWith(","))
             t = t.substring(0, t.length() - 1).trim();
-        }
         return t.isEmpty() ? null : t;
     }
 
@@ -69,72 +49,165 @@ public class AccessDb {
      * Insert a row into ParticipantsWrite. Returns generated Id (AUTOINCREMENT) or
      * -1 on failure.
      *
-     * Expects map keys as produced by EntryForm:
+     * The method only inserts columns that actually exist in the table so it won't
+     * fail
+     * if CardUID or CreatedAt are missing.
+     *
+     * Expects map keys from EntryForm:
      * FullName, BSGUID, ParticipationType, bsgDistrict, Email, phoneNumber,
      * bsgState, memberTyp, unitNam, rank_or_section, dataOfBirth, age
-     *
-     * cardUid may be null.
      */
     public static long insertAttendee(Map<String, String> data, String cardUid) throws SQLException {
-        String sql = "INSERT INTO [ParticipantsWrite] "
-                + "([FullName],[BSGUID],[ParticipationType],[BSGDistrict],[Email],[PhoneNumber],"
-                + "[BSGState],[MemberType],[UnitName],[RankOrSection],[DateOfBirth],[Age],[CardUID],[CreatedAt]) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        try (Connection c = getConnection();
-                PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+        List<String> expected = Arrays.asList(
+                "FullName", "BSGUID", "ParticipationType", "BSGDistrict",
+                "Email", "PhoneNumber", "BSGState", "MemberType",
+                "UnitName", "RankOrSection", "DateOfBirth", "Age",
+                "CardUID", "CreatedAt");
 
-            ps.setString(1, normalize(data.get("FullName")));
-            ps.setString(2, normalize(data.get("BSGUID")));
-            ps.setString(3, normalize(data.get("ParticipationType")));
-            ps.setString(4, normalize(data.get("bsgDistrict")));
-            ps.setString(5, normalize(data.get("Email")));
-            ps.setString(6, normalize(data.get("phoneNumber")));
-            ps.setString(7, normalize(data.get("bsgState")));
-            ps.setString(8, normalize(data.get("memberTyp")));
-            ps.setString(9, normalize(data.get("unitNam")));
-            ps.setString(10, normalize(data.get("rank_or_section")));
-
-            // DateOfBirth -> Date
-            String dob = normalize(data.get("dataOfBirth"));
-            if (dob != null) {
-                try {
-                    ps.setDate(11, Date.valueOf(dob)); // expects yyyy-MM-dd
-                } catch (IllegalArgumentException ex) {
-                    ps.setNull(11, Types.DATE);
+        try (Connection c = getConnection()) {
+            // discover actual columns present (uppercase for comparison)
+            Set<String> actual = new HashSet<>();
+            DatabaseMetaData md = c.getMetaData();
+            try (ResultSet rs = md.getColumns(null, null, "ParticipantsWrite", "%")) {
+                while (rs.next()) {
+                    String col = rs.getString("COLUMN_NAME");
+                    if (col != null)
+                        actual.add(col.toUpperCase());
                 }
-            } else {
-                ps.setNull(11, Types.DATE);
             }
 
-            ps.setString(12, normalize(data.get("age")));
-            ps.setString(13, normalize(cardUid));
+            List<String> cols = new ArrayList<>();
+            List<Object> vals = new ArrayList<>();
 
-            Timestamp now = Timestamp.from(Instant.now());
-            ps.setTimestamp(14, now);
+            for (String col : expected) {
+                if (!actual.contains(col.toUpperCase()))
+                    continue;
 
-            int affected = ps.executeUpdate();
-            if (affected == 0)
+                switch (col) {
+                    case "DateOfBirth": {
+                        String dob = normalize(data.get("dataOfBirth"));
+                        if (dob == null)
+                            vals.add(null);
+                        else {
+                            try {
+                                vals.add(java.sql.Date.valueOf(dob)); // explicitly java.sql.Date
+                            } catch (IllegalArgumentException ex) {
+                                vals.add(null);
+                            }
+                        }
+                        break;
+                    }
+                    case "CreatedAt":
+                        vals.add(java.sql.Timestamp.from(Instant.now()));
+                        break;
+                    case "CardUID":
+                        vals.add(normalize(cardUid));
+                        break;
+                    default: {
+                        String mapKey;
+                        switch (col) {
+                            case "FullName":
+                                mapKey = "FullName";
+                                break;
+                            case "BSGUID":
+                                mapKey = "BSGUID";
+                                break;
+                            case "ParticipationType":
+                                mapKey = "ParticipationType";
+                                break;
+                            case "BSGDistrict":
+                                mapKey = "bsgDistrict";
+                                break;
+                            case "Email":
+                                mapKey = "Email";
+                                break;
+                            case "PhoneNumber":
+                                mapKey = "phoneNumber";
+                                break;
+                            case "BSGState":
+                                mapKey = "bsgState";
+                                break;
+                            case "MemberType":
+                                mapKey = "memberTyp";
+                                break;
+                            case "UnitName":
+                                mapKey = "unitNam";
+                                break;
+                            case "RankOrSection":
+                                mapKey = "rank_or_section";
+                                break;
+                            case "Age":
+                                mapKey = "age";
+                                break;
+                            default:
+                                mapKey = col;
+                        }
+                        vals.add(normalize(data.get(mapKey)));
+                    }
+                }
+                cols.add("[" + col + "]");
+            }
+
+            if (cols.isEmpty())
+                throw new SQLException("No insertable columns found in ParticipantsWrite.");
+
+            String placeholders = String.join(",", Collections.nCopies(cols.size(), "?"));
+            String sql = "INSERT INTO [ParticipantsWrite] (" + String.join(",", cols) + ") VALUES (" + placeholders
+                    + ")";
+
+            try (PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+                for (int i = 0; i < vals.size(); i++) {
+                    Object v = vals.get(i);
+                    int idx = i + 1;
+                    String colName = cols.get(i).replace("[", "").replace("]", "");
+                    if (v == null) {
+                        if ("DateOfBirth".equalsIgnoreCase(colName))
+                            ps.setNull(idx, Types.DATE);
+                        else if ("CreatedAt".equalsIgnoreCase(colName))
+                            ps.setNull(idx, Types.TIMESTAMP);
+                        else
+                            ps.setNull(idx, Types.VARCHAR);
+                    } else if (v instanceof java.sql.Date) {
+                        ps.setDate(idx, (java.sql.Date) v);
+                    } else if (v instanceof java.sql.Timestamp) {
+                        ps.setTimestamp(idx, (java.sql.Timestamp) v);
+                    } else {
+                        ps.setString(idx, v.toString());
+                    }
+                }
+
+                int affected = ps.executeUpdate();
+                if (affected == 0)
+                    return -1;
+                try (ResultSet keys = ps.getGeneratedKeys()) {
+                    if (keys.next())
+                        return keys.getLong(1);
+                }
                 return -1;
-
-            try (ResultSet keys = ps.getGeneratedKeys()) {
-                if (keys.next())
-                    return keys.getLong(1);
             }
-            return -1;
         }
     }
 
     /**
-     * Update CardUID for a participant row id.
+     * Update CardUID if the column exists. If not, return false without throwing.
      */
     public static boolean updateCardUid(long id, String cardUid) throws SQLException {
-        String upd = "UPDATE [ParticipantsWrite] SET [CardUID] = ? WHERE [Id] = ?";
-        try (Connection c = getConnection();
-                PreparedStatement ps = c.prepareStatement(upd)) {
-            ps.setString(1, normalize(cardUid));
-            ps.setLong(2, id);
-            int n = ps.executeUpdate();
-            return n > 0;
+        try (Connection c = getConnection()) {
+            DatabaseMetaData md = c.getMetaData();
+            boolean hasCol = false;
+            try (ResultSet rs = md.getColumns(null, null, "ParticipantsWrite", "CardUID")) {
+                if (rs.next())
+                    hasCol = true;
+            }
+            if (!hasCol)
+                return false;
+
+            String upd = "UPDATE [ParticipantsWrite] SET [CardUID] = ? WHERE [Id] = ?";
+            try (PreparedStatement ps = c.prepareStatement(upd)) {
+                ps.setString(1, normalize(cardUid));
+                ps.setLong(2, id);
+                return ps.executeUpdate() > 0;
+            }
         }
     }
 
@@ -148,11 +221,10 @@ public class AccessDb {
                     listTables();
                     break;
                 case "describe":
-                    if (args.length < 2) {
+                    if (args.length < 2)
                         System.out.println("Usage: describe <TableName>");
-                    } else {
+                    else
                         describeTable(args[1]);
-                    }
                     break;
                 case "create-participants":
                     createParticipantsWriteIfMissing();
@@ -167,7 +239,6 @@ public class AccessDb {
                     System.out.println("  java -cp \"out;lib/*\" db.AccessDb describe <TableName>");
                     System.out.println("  java -cp \"out;lib/*\" db.AccessDb create-participants");
                     System.out.println("  java -cp \"out;lib/*\" db.AccessDb test");
-                    break;
             }
         } catch (Exception ex) {
             System.out.println("Error: " + ex.getMessage());
@@ -182,9 +253,7 @@ public class AccessDb {
                 System.out.println("Tables/Views found in " + DB_FILE_PATH + ":");
                 boolean any = false;
                 while (rs.next()) {
-                    String name = rs.getString("TABLE_NAME");
-                    String type = rs.getString("TABLE_TYPE");
-                    System.out.println(" - " + name + "  (" + type + ")");
+                    System.out.println(" - " + rs.getString("TABLE_NAME") + "  (" + rs.getString("TABLE_TYPE") + ")");
                     any = true;
                 }
                 if (!any)
@@ -204,10 +273,10 @@ public class AccessDb {
                 while (rs.next()) {
                     if (!any)
                         System.out.println("Columns for table " + tableName + ":");
-                    String col = rs.getString("COLUMN_NAME");
-                    String type = rs.getString("TYPE_NAME");
-                    int size = rs.getInt("COLUMN_SIZE");
-                    System.out.printf(" - %s : %s(%d)%n", col, type, size);
+                    System.out.printf(" - %s : %s(%d)%n",
+                            rs.getString("COLUMN_NAME"),
+                            rs.getString("TYPE_NAME"),
+                            rs.getInt("COLUMN_SIZE"));
                     any = true;
                 }
             }
@@ -216,26 +285,23 @@ public class AccessDb {
                     while (rs2.next()) {
                         if (!any)
                             System.out.println("Columns for table " + tableName.toUpperCase() + ":");
-                        String col = rs2.getString("COLUMN_NAME");
-                        String type = rs2.getString("TYPE_NAME");
-                        int size = rs2.getInt("COLUMN_SIZE");
-                        System.out.printf(" - %s : %s(%d)%n", col, type, size);
+                        System.out.printf(" - %s : %s(%d)%n",
+                                rs2.getString("COLUMN_NAME"),
+                                rs2.getString("TYPE_NAME"),
+                                rs2.getInt("COLUMN_SIZE"));
                         any = true;
                     }
                 }
             }
-            if (!any) {
+            if (!any)
                 System.out.println("  (no columns found or table does not exist: " + tableName + ")");
-            }
         } catch (SQLException ex) {
             System.out.println("Failed to describe table: " + ex.getMessage());
             ex.printStackTrace(System.out);
         }
     }
 
-    /**
-     * Create ParticipantsWrite table if it does not exist.
-     */
+    /** Create ParticipantsWrite if missing (without CardUID). */
     public static void createParticipantsWriteIfMissing() {
         String target = "ParticipantsWrite";
         try (Connection c = getConnection()) {
@@ -251,7 +317,6 @@ public class AccessDb {
                         exists = true;
                 }
             }
-
             if (exists) {
                 System.out.println("Table '" + target + "' already exists - no action taken.");
                 describeTable(target);
@@ -259,7 +324,6 @@ public class AccessDb {
             }
 
             System.out.println("Creating table '" + target + "'...");
-
             String createSql = "CREATE TABLE [ParticipantsWrite] ("
                     + "[Id] AUTOINCREMENT PRIMARY KEY, "
                     + "[FullName] TEXT(255), "
@@ -274,10 +338,8 @@ public class AccessDb {
                     + "[RankOrSection] TEXT(100), "
                     + "[DateOfBirth] DATETIME, "
                     + "[Age] TEXT(10), "
-                    + "[CardUID] TEXT(255), "
                     + "[CreatedAt] DATETIME"
                     + ")";
-
             try (Statement st = c.createStatement()) {
                 st.executeUpdate(createSql);
                 System.out.println("Table created successfully.");
@@ -296,14 +358,12 @@ public class AccessDb {
         System.out.println("Attempting to connect to the Access database...");
         try (Connection c = getConnection()) {
             System.out.println("Connection successful.");
-            try (Statement st = c.createStatement()) {
-                try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM [ParticipantsWrite]")) {
-                    if (rs.next()) {
-                        long count = rs.getLong(1);
-                        System.out.println("ParticipantsWrite table row count: " + count);
-                    } else {
-                        System.out.println("ParticipantsWrite table query returned no rows.");
-                    }
+            try (Statement st = c.createStatement();
+                    ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM [ParticipantsWrite]")) {
+                if (rs.next()) {
+                    System.out.println("ParticipantsWrite table row count: " + rs.getLong(1));
+                } else {
+                    System.out.println("ParticipantsWrite table query returned no rows.");
                 }
             } catch (SQLException qex) {
                 System.out.println(
@@ -320,9 +380,6 @@ public class AccessDb {
             System.out.println("Checklist:");
             System.out.println("- Are the UCanAccess jars present in lib/? (ucanaccess, jackcess, hsqldb, commons-*)");
             System.out.println("- Did you run with the jars on the runtime classpath? Example:");
-            System.out.println(
-                    "    java --module-path \"C:\\path\\to\\javafx-sdk\\lib\" --add-modules javafx.controls,javafx.fxml -cp \"out;lib/*\" ui.MainUI");
-            System.out.println("  or for CLI test without JavaFX modules:");
             System.out.println("    java -cp \"out;lib/*\" db.AccessDb test");
         }
     }
