@@ -73,9 +73,9 @@ public class AttendancePage {
             String timeStr = timeFmt.format(nowTime);
 
             // read location.txt (best-effort) from current working directory
-            String location = "Room 1";
+            String location = "Room x";
             try {
-                Path p = Paths.get("./location.txt");
+                Path p = Paths.get("location.txt");
                 if (Files.exists(p)) {
                     String raw = Files.readString(p).trim();
                     if (!raw.isEmpty())

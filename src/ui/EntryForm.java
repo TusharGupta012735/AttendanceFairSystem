@@ -467,11 +467,7 @@ public class EntryForm {
         }
     }
 
-    // ---------------- Batch entry UI ----------------
-    /**
-     * Create a batch UI which shows rows provided as List<Map<String,String>>
-     * and lets the user accept/write them to NFC one-by-one.
-     */
+    // For auto-upload button
     public static Parent createBatch(BiConsumer<Map<String, String>, Runnable> onSave,
             List<Map<String, String>> batchRows) {
         BorderPane root = new BorderPane();
