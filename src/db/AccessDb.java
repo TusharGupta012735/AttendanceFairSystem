@@ -24,6 +24,207 @@ public class AccessDb {
     private static final String DB_FILE_PATH = "C:/Users/kamal/Documents/bsd.accdb";
     private static final String CONN_URL = "jdbc:ucanaccess://" + DB_FILE_PATH;
 
+    /**
+     * Fetch ParticipantsRecord rows filtered by state + excel_category.
+     * If onlyStatusF==true, keeps only rows where status='f' (case-insensitive).
+     *
+     * Returns each row as a Map with keys in the exact shape EntryForm expects:
+     * FullName, BSGUID, ParticipationType, bsgDistrict, Email, phoneNumber,
+     * bsgState,
+     * memberTyp, unitNam, rank_or_section, dataOfBirth (yyyy-MM-dd), age.
+     */
+    public static List<Map<String, String>> fetchParticipantsByStateAndCategory(
+            String state, String excelCategory, boolean onlyStatusF) throws SQLException {
+
+        try (Connection c = getConnection()) {
+            // --- verify table exists ---
+            DatabaseMetaData md = c.getMetaData();
+            boolean tableExists = false;
+            try (ResultSet rs = md.getTables(null, null, "ParticipantsRecord", new String[] { "TABLE" })) {
+                if (rs.next())
+                    tableExists = true;
+            }
+            if (!tableExists) {
+                try (ResultSet rs = md.getTables(null, null, "PARTICIPANTSRECORD", new String[] { "TABLE" })) {
+                    if (rs.next())
+                        tableExists = true;
+                }
+            }
+            if (!tableExists)
+                throw new SQLException("ParticipantsRecord table not found.");
+
+            // --- discover columns ---
+            Set<String> cols = new HashSet<>();
+            try (ResultSet rs = md.getColumns(null, null, "ParticipantsRecord", "%")) {
+                while (rs.next()) {
+                    String cn = rs.getString("COLUMN_NAME");
+                    if (cn != null)
+                        cols.add(cn.toUpperCase(Locale.ROOT));
+                }
+            }
+
+            // excel_category vs ExcelCategory (or missing)
+            final String EXCEL_COL = cols.contains("EXCEL_CATEGORY") ? "[excel_category]"
+                    : cols.contains("EXCELCATEGORY") ? "[ExcelCategory]" : null;
+
+            // Order by SNo if available, else Id, else fallback
+            final boolean HAS_SNO = cols.contains("SNO");
+            final boolean HAS_ID = cols.contains("ID");
+
+            // --- build SQL (LIKE, case-insensitive) ---
+            StringBuilder sql = new StringBuilder("SELECT * FROM [ParticipantsRecord] WHERE 1=1");
+            List<Object> params = new ArrayList<>();
+
+            if (state != null && !state.trim().isEmpty()) {
+                sql.append(" AND UCASE([BSGState]) LIKE UCASE(?)");
+                params.add("%" + state.trim() + "%");
+            }
+            if (excelCategory != null && !excelCategory.trim().isEmpty()) {
+                if (EXCEL_COL == null) {
+                    sql.append(" AND 1=0"); // requested category filter but column missing
+                } else {
+                    sql.append(" AND UCASE(").append(EXCEL_COL).append(") LIKE UCASE(?)");
+                    params.add("%" + excelCategory.trim() + "%");
+                }
+            }
+            if (onlyStatusF) {
+                sql.append(" AND UCASE([status]) = 'F'");
+            }
+            if (HAS_SNO)
+                sql.append(" ORDER BY [SNo]");
+            else if (HAS_ID)
+                sql.append(" ORDER BY [Id]");
+            else
+                sql.append(" ORDER BY [FullName]");
+
+            try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
+                for (int i = 0; i < params.size(); i++) {
+                    ps.setString(i + 1, params.get(i).toString());
+                }
+
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<Map<String, String>> out = new ArrayList<>();
+
+                    java.util.function.Function<String, String> get = col -> {
+                        try {
+                            return Optional.ofNullable(rs.getString(col)).orElse("").trim();
+                        } catch (SQLException e) {
+                            return "";
+                        }
+                    };
+                    java.util.function.BiFunction<String, String, String> get2 = (a, b) -> {
+                        String v = get.apply(a);
+                        return !v.isEmpty() ? v : get.apply(b);
+                    };
+
+                    while (rs.next()) {
+                        Map<String, String> row = new LinkedHashMap<>();
+
+                        row.put("FullName", get2.apply("FullName", "FULLNAME"));
+                        row.put("BSGUID", get2.apply("BSGUID", "BSGUID"));
+                        row.put("ParticipationType", get2.apply("ParticipationType", "PARTICIPATIONTYPE"));
+                        row.put("bsgDistrict", get2.apply("bsgDistrict", "BSGDISTRICT")); // your schema uses
+                                                                                          // bsgDistrict
+                        row.put("Email", get2.apply("Email", "EMAIL"));
+                        row.put("phoneNumber", get2.apply("phoneNumber", "PHONENUMBER")); // number type is fine;
+                                                                                          // getString works
+                        row.put("bsgState", get2.apply("bsgState", "BSGSTATE"));
+
+                        // --- names per your schema ---
+                        String memberType = get2.apply("memberType", "MEMBERTYPE");
+                        String unitName = get2.apply("unitName", "UNITNAME");
+                        String rank = get2.apply("rank_or_section", "RANK_OR_SECTION");
+
+                        // Put BOTH key styles to satisfy UI and AccessDb.insertAttendee
+                        row.put("memberType", memberType);
+                        row.put("memberTyp", memberType);
+
+                        row.put("unitName", unitName);
+                        row.put("unitNam", unitName);
+
+                        row.put("rank_or_section", rank);
+
+                        // --- dateOfBirth -> normalize to yyyy-MM-dd ---
+                        String dobIso = "";
+                        try {
+                            java.sql.Date d = null;
+                            try {
+                                d = rs.getDate("dateOfBirth");
+                            } catch (SQLException ignore) {
+                            }
+                            if (d == null) {
+                                try {
+                                    d = rs.getDate("DATEOFBIRTH");
+                                } catch (SQLException ignore) {
+                                }
+                            }
+                            if (d != null) {
+                                dobIso = d.toLocalDate().toString();
+                            } else {
+                                // maybe stored as text
+                                String dobText = get2.apply("dateOfBirth", "DATEOFBIRTH");
+                                dobIso = tryNormalizeDob(dobText);
+                            }
+                        } catch (Exception ignore) {
+                        }
+                        // Again: BOTH keys for compatibility
+                        row.put("dateOfBirth", dobIso); // UI expects this
+                        row.put("dataOfBirth", dobIso); // AccessDb.insertAttendee expects this (typo in mapping)
+
+                        row.put("age", get2.apply("age", "AGE"));
+
+                        // NFC CSV in stable order
+                        String csv = String.join(",",
+                                Arrays.asList(
+                                        row.getOrDefault("FullName", ""),
+                                        row.getOrDefault("BSGUID", ""),
+                                        row.getOrDefault("ParticipationType", ""),
+                                        row.getOrDefault("bsgDistrict", ""),
+                                        row.getOrDefault("Email", ""),
+                                        row.getOrDefault("phoneNumber", ""),
+                                        row.getOrDefault("bsgState", ""),
+                                        row.getOrDefault("memberType", ""), // use correct names here
+                                        row.getOrDefault("unitName", ""),
+                                        row.getOrDefault("rank_or_section", ""),
+                                        row.getOrDefault("dateOfBirth", ""),
+                                        row.getOrDefault("age", "")));
+                        row.put("__CSV__", csv);
+
+                        out.add(row);
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+
+    /** Parse many common DOB formats to ISO yyyy-MM-dd (return "" if unknown). */
+    private static String tryNormalizeDob(String raw) {
+        if (raw == null)
+            return "";
+        String s = raw.trim();
+        if (s.isEmpty())
+            return "";
+
+        String[] patterns = {
+                "yyyy-MM-dd", "dd/MM/yyyy", "dd-MM-yyyy", "MM/dd/yyyy",
+                "dd.MM.yyyy", "d/M/yyyy", "d-M-yyyy", "M/d/yyyy"
+        };
+        for (String p : patterns) {
+            try {
+                java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter.ofPattern(p);
+                java.time.LocalDate d = java.time.LocalDate.parse(s, fmt);
+                return d.toString();
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            return java.time.LocalDate.parse(s).toString();
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
+
     public static Connection getConnection() throws SQLException {
         try {
             Class.forName("net.ucanaccess.jdbc.UcanaccessDriver");
@@ -85,7 +286,7 @@ public class AccessDb {
 
                     switch (col) {
                         case "DateOfBirth": {
-                            String dob = normalize(data.get("dataOfBirth"));
+                            String dob = normalize(data.get("dateOfBirth"));
                             if (dob == null)
                                 vals.add(null);
                             else {
@@ -240,7 +441,7 @@ public class AccessDb {
         // Normalize keys from incoming data map
         String bsguid = normalize(data.get("BSGUID"));
         String fullName = normalize(data.get("FullName"));
-        String dobStr = normalize(data.get("dataOfBirth")); // expected yyyy-mm-dd
+        String dobStr = normalize(data.get("dateOfBirth")); // expected yyyy-mm-dd
         String phone = normalize(data.get("phoneNumber"));
 
         DatabaseMetaData md = c.getMetaData();

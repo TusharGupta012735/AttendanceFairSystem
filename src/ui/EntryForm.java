@@ -6,6 +6,7 @@ import javafx.beans.binding.DoubleBinding;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Parent;
+import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.scene.text.Font;
@@ -19,10 +20,19 @@ import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
 public class EntryForm {
+
+    // --- Global NFC busy flag so only one NFC operation runs at a time
+    // (read/write) ---
+    private static final AtomicBoolean NFC_BUSY = new AtomicBoolean(false);
+
+    public static void setNfcBusy(boolean b) {
+        NFC_BUSY.set(b);
+    }
 
     /**
      * Note: onSave is a BiConsumer where the second parameter is a Runnable `done`
@@ -69,15 +79,15 @@ public class EntryForm {
         ComboBox<String> rank_or_section = new ComboBox<>();
         rank_or_section.getItems().addAll("guide", "scout", "ranger");
         rank_or_section.setPromptText("Select");
-        DatePicker dataOfBirth = new DatePicker();
-        dataOfBirth.setPromptText("Date of birth");
+        DatePicker dateOfBirth = new DatePicker();
+        dateOfBirth.setPromptText("Date of birth");
         TextField age = new TextField();
         age.setPromptText("Age");
 
         Control[] controls = new Control[] {
                 fullName, bsguid, participationType, bsgDistrict,
                 email, phoneNumber, bsgState, memberTyp,
-                unitNam, rank_or_section, dataOfBirth, age
+                unitNam, rank_or_section, dateOfBirth, age
         };
 
         for (Control c : controls) {
@@ -97,7 +107,7 @@ public class EntryForm {
         addField(left, 2, "ParticipationType", participationType);
         addField(left, 3, "bsgDistrict", bsgDistrict);
         addField(left, 4, "unitNam", unitNam);
-        addField(left, 5, "dataOfBirth", dataOfBirth);
+        addField(left, 5, "dateOfBirth", dateOfBirth);
 
         addField(right, 0, "Email", email);
         addField(right, 1, "phoneNumber", phoneNumber);
@@ -137,10 +147,8 @@ public class EntryForm {
                     .forEach(n -> n.setStyle(labelBaseStyleCore + "; -fx-font-size: " + (fs - 1) + "px;"));
             for (Control c : controls) {
                 c.setStyle(baseStyleCore + " -fx-font-size: " + fs + "px;");
-                if (c instanceof DatePicker) {
-                    DatePicker dp = (DatePicker) c;
-                    if (dp.getEditor() != null)
-                        dp.getEditor().setStyle("-fx-font-size:" + fs + "px;");
+                if (c instanceof DatePicker dp && dp.getEditor() != null) {
+                    dp.getEditor().setStyle("-fx-font-size:" + fs + "px;");
                 }
             }
             title.setFont(Font.font("System", FontWeight.BOLD, Math.max(16, fs + 4)));
@@ -149,7 +157,7 @@ public class EntryForm {
         // Buttons
         Button saveBtn = new Button("Save");
         Button clearBtn = new Button("Clear");
-        Button eraseBtn = new Button("Erase Card"); // Erase button
+        Button eraseBtn = new Button("Erase Card");
         saveBtn.setStyle(
                 "-fx-background-color:#2196f3;-fx-text-fill:white;-fx-font-weight:600;-fx-padding:8 20;-fx-background-radius:6;");
         clearBtn.setStyle(
@@ -165,7 +173,6 @@ public class EntryForm {
         validation.setStyle("-fx-text-fill:#b00020;-fx-font-size:12;");
         validation.setWrapText(true);
 
-        // status label for erase/write feedback
         Label status = new Label();
         status.setStyle("-fx-font-size:12; -fx-text-fill:#424242;");
         status.setWrapText(true);
@@ -183,20 +190,20 @@ public class EntryForm {
                 return;
             }
 
-            // ------------------ BUILD CLEAN MAP + CSV FOR NFC ------------------
-            String fullNameVal = fullName.getText() == null ? "" : fullName.getText().trim();
-            String bsguidVal = bsguid.getText() == null ? "" : bsguid.getText().trim();
-            String participationVal = participationType.getValue() == null ? "" : participationType.getValue().trim();
-            String bsgDistrictVal = bsgDistrict.getText() == null ? "" : bsgDistrict.getText().trim();
-            String emailVal = email.getText() == null ? "" : email.getText().trim();
-            String phoneVal = phoneNumber.getText() == null ? "" : phoneNumber.getText().trim();
-            String bsgStateVal = bsgState.getText() == null ? "" : bsgState.getText().trim();
-            String memberTypVal = memberTyp.getText() == null ? "" : memberTyp.getText().trim();
-            String unitNamVal = unitNam.getText() == null ? "" : unitNam.getText().trim();
-            String rankVal = rank_or_section.getValue() == null ? "" : rank_or_section.getValue().trim();
-            LocalDate dobVal = dataOfBirth.getValue();
-            String dobStr = dobVal == null ? "" : dobVal.toString();
-            String ageVal = age.getText() == null ? "" : age.getText().trim();
+            // --- BUILD MAP + CSV (keys aligned to AccessDb expectations) ---
+            String fullNameVal = txt(fullName);
+            String bsguidVal = txt(bsguid);
+            String participationVal = val(participationType);
+            String bsgDistrictVal = txt(bsgDistrict);
+            String emailVal = txt(email);
+            String phoneVal = txt(phoneNumber);
+            String bsgStateVal = txt(bsgState);
+            String memberTypVal = txt(memberTyp); // <-- memberTyp (not memberType)
+            String unitNamVal = txt(unitNam); // <-- unitNam (not unitName)
+            String rankVal = val(rank_or_section);
+            LocalDate dobVal = dateOfBirth.getValue();
+            String dobStr = dobVal == null ? "" : dobVal.toString(); // yyyy-MM-dd
+            String ageVal = txt(age);
 
             Map<String, String> data = new LinkedHashMap<>();
             data.put("FullName", fullNameVal);
@@ -209,7 +216,7 @@ public class EntryForm {
             data.put("memberTyp", memberTypVal);
             data.put("unitNam", unitNamVal);
             data.put("rank_or_section", rankVal);
-            data.put("dataOfBirth", dobStr);
+            data.put("dataOfBirth", dobStr); // <-- AccessDb expects dataOfBirth
             data.put("age", ageVal);
 
             String csvForNfc = String.join(",",
@@ -228,9 +235,7 @@ public class EntryForm {
                             ageVal));
 
             data.put("__CSV__", csvForNfc);
-            // -------------------------------------------------------------------
 
-            // Disable buttons while save/write is in progress
             saveBtn.setDisable(true);
             clearBtn.setDisable(true);
             eraseBtn.setDisable(true);
@@ -273,13 +278,13 @@ public class EntryForm {
             memberTyp.clear();
             unitNam.clear();
             rank_or_section.setValue(null);
-            dataOfBirth.setValue(null);
+            dateOfBirth.setValue(null);
             age.clear();
             validation.setText("");
             status.setText("");
         });
 
-        // Erase Card action (runs on background thread)
+        // Erase Card action
         eraseBtn.setOnAction(evt -> {
             Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
                     "This will overwrite (erase) writable data on the presented MIFARE Classic 1K card for sectors\n" +
@@ -297,7 +302,8 @@ public class EntryForm {
 
                 Thread th = new Thread(() -> {
                     try {
-                        SmartMifareEraser.eraseMemory();
+                        setNfcBusy(true);
+                        nfc.SmartMifareEraser.eraseMemory();
                         Platform.runLater(() -> {
                             status.setStyle("-fx-text-fill:#27AE60;");
                             status.setText("✅ Erase complete.");
@@ -309,6 +315,7 @@ public class EntryForm {
                             status.setText("❌ Erase failed: " + msg);
                         });
                     } finally {
+                        setNfcBusy(false);
                         Platform.runLater(() -> {
                             saveBtn.setDisable(false);
                             clearBtn.setDisable(false);
@@ -324,15 +331,27 @@ public class EntryForm {
         fontSizeBinding.getValue();
 
         // Start NFC auto-fill (false = don't overwrite existing fields; 1000ms poll)
-        startNfcAutoFill(root,
+        ScheduledExecutorService svc = startNfcAutoFill(root,
                 fullName, bsguid, participationType,
                 bsgDistrict, email, phoneNumber,
                 bsgState, memberTyp, unitNam,
-                rank_or_section, dataOfBirth, age,
+                rank_or_section, dateOfBirth, age,
                 false, // overwriteAlways
                 1000);
+        // expose poller on the root so Dashboard can stop it when switching screens
+        if (svc != null) {
+            root.getProperties().put("nfc-poller", svc);
+        }
 
         return root;
+    }
+
+    private static String txt(TextField tf) {
+        return tf.getText() == null ? "" : tf.getText().trim();
+    }
+
+    private static String val(ComboBox<String> cb) {
+        return cb.getValue() == null ? "" : cb.getValue().trim();
     }
 
     private static void addField(GridPane grid, int row, String labelText, Control field) {
@@ -349,7 +368,7 @@ public class EntryForm {
             TextField fullName, TextField bsguid, ComboBox<String> participationType,
             TextField bsgDistrict, TextField email, TextField phoneNumber,
             TextField bsgState, TextField memberTyp, TextField unitNam,
-            ComboBox<String> rank_or_section, DatePicker dataOfBirth, TextField age,
+            ComboBox<String> rank_or_section, DatePicker dateOfBirth, TextField age,
             boolean overwriteAlways, long pollIntervalMs) {
 
         ScheduledExecutorService svc = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -362,7 +381,11 @@ public class EntryForm {
 
         Runnable task = () -> {
             try {
-                SmartMifareReader.ReadResult rr = SmartMifareReader.readUIDWithData(3000);
+                // if someone else is using NFC (write/erase/info), don't poll now
+                if (NFC_BUSY.get())
+                    return;
+
+                SmartMifareReader.ReadResult rr = SmartMifareReader.readUIDWithData(1500);
                 if (rr == null || rr.uid == null || rr.uid.isEmpty())
                     return;
 
@@ -400,10 +423,10 @@ public class EntryForm {
                             if (!dobStr.isEmpty()) {
                                 try {
                                     LocalDate d = LocalDate.parse(dobStr);
-                                    if (overwriteAlways || dataOfBirth.getValue() == null)
-                                        dataOfBirth.setValue(d);
-                                } catch (Exception ex) {
-                                    /* ignore parse error */ }
+                                    if (overwriteAlways || dateOfBirth.getValue() == null)
+                                        dateOfBirth.setValue(d);
+                                } catch (Exception ignored) {
+                                }
                             }
                         }
 
@@ -423,7 +446,7 @@ public class EntryForm {
 
         svc.scheduleWithFixedDelay(task, 0, Math.max(200, pollIntervalMs), TimeUnit.MILLISECONDS);
 
-        // shutdown when window closes
+        // shutdown when window closes (safety)
         root.sceneProperty().addListener((obs, oldScene, newScene) -> {
             if (newScene != null) {
                 Window w = newScene.getWindow();
@@ -438,7 +461,24 @@ public class EntryForm {
             }
         });
 
+        // also stop when this node is removed from scene graph
+        root.parentProperty().addListener((o, oldP, newP) -> {
+            if (newP == null) {
+                svc.shutdownNow();
+            }
+        });
+
         return svc;
+    }
+
+    public static void stopNfcPolling(Node root) {
+        if (root == null)
+            return;
+        Object svc = root.getProperties().get("nfc-poller");
+        if (svc instanceof ScheduledExecutorService s) {
+            s.shutdownNow();
+            root.getProperties().remove("nfc-poller");
+        }
     }
 
     private static void setFieldFromCsv(TextField tf, String[] parts, int idx, boolean overwriteAlways) {
@@ -467,7 +507,7 @@ public class EntryForm {
         }
     }
 
-    // For auto-upload button
+    // ---------- Batch UI ----------
     public static Parent createBatch(BiConsumer<Map<String, String>, Runnable> onSave,
             List<Map<String, String>> batchRows) {
         BorderPane root = new BorderPane();
@@ -480,7 +520,6 @@ public class EntryForm {
         header.setAlignment(Pos.CENTER_LEFT);
         header.setPadding(new Insets(0, 0, 10, 0));
 
-        // reuse fields (simplified layout)
         TextField fullName = new TextField();
         TextField bsguid = new TextField();
         ComboBox<String> participationType = new ComboBox<>();
@@ -489,11 +528,11 @@ public class EntryForm {
         TextField email = new TextField();
         TextField phoneNumber = new TextField();
         TextField bsgState = new TextField();
-        TextField memberType = new TextField();
-        TextField unitName = new TextField();
+        TextField memberTyp = new TextField();
+        TextField unitNam = new TextField();
         ComboBox<String> rank_or_section = new ComboBox<>();
         rank_or_section.getItems().addAll("guide", "scout", "ranger");
-        DatePicker dataOfBirth = new DatePicker();
+        DatePicker dateOfBirth = new DatePicker();
         TextField age = new TextField();
 
         GridPane left = new GridPane();
@@ -507,13 +546,13 @@ public class EntryForm {
         addField(left, 1, "BSGUID", bsguid);
         addField(left, 2, "ParticipationType", participationType);
         addField(left, 3, "bsgDistrict", bsgDistrict);
-        addField(left, 4, "unitNam", unitName);
-        addField(left, 5, "dataOfBirth", dataOfBirth);
+        addField(left, 4, "unitNam", unitNam);
+        addField(left, 5, "dateOfBirth", dateOfBirth);
 
         addField(right, 0, "Email", email);
         addField(right, 1, "phoneNumber", phoneNumber);
         addField(right, 2, "bsgState", bsgState);
-        addField(right, 3, "memberTyp", memberType);
+        addField(right, 3, "memberTyp", memberTyp);
         addField(right, 4, "rank_or_section", rank_or_section);
         addField(right, 5, "age", age);
 
@@ -558,10 +597,10 @@ public class EntryForm {
                 email.clear();
                 phoneNumber.clear();
                 bsgState.clear();
-                memberType.clear();
-                unitName.clear();
+                memberTyp.clear();
+                unitNam.clear();
                 rank_or_section.setValue(null);
-                dataOfBirth.setValue(null);
+                dateOfBirth.setValue(null);
                 age.clear();
                 return;
             }
@@ -575,27 +614,41 @@ public class EntryForm {
             email.setText(pick.apply(cur, "Email"));
             phoneNumber.setText(pick.apply(cur, "phoneNumber"));
             bsgState.setText(pick.apply(cur, "bsgState"));
-            memberType.setText(pick.apply(cur, "memberType"));
-            unitName.setText(pick.apply(cur, "unitName"));
+
+            // prefer canonical (memberTyp/unitNam). Accept memberType/unitName as fallback.
+            String mt = pick.apply(cur, "memberTyp");
+            if (mt.isEmpty())
+                mt = pick.apply(cur, "memberType");
+            memberTyp.setText(mt);
+
+            String un = pick.apply(cur, "unitNam");
+            if (un.isEmpty())
+                un = pick.apply(cur, "unitName");
+            unitNam.setText(un);
+
             String r = pick.apply(cur, "rank_or_section");
             if (!r.isEmpty())
                 rank_or_section.setValue(r);
+
+            // date key from DB fetch is "dataOfBirth"
             String dob = pick.apply(cur, "dataOfBirth");
-            if (dob != null && !dob.isEmpty()) {
+            if (dob.isEmpty())
+                dob = pick.apply(cur, "dateOfBirth"); // fallback
+            if (!dob.isEmpty()) {
                 try {
-                    dataOfBirth.setValue(LocalDate.parse(dob));
+                    dateOfBirth.setValue(LocalDate.parse(dob));
                 } catch (Exception ex) {
-                    dataOfBirth.setValue(null);
+                    dateOfBirth.setValue(null);
                 }
             } else {
-                dataOfBirth.setValue(null);
+                dateOfBirth.setValue(null);
             }
             age.setText(pick.apply(cur, "age"));
             status.setText("Record " + (index[0] + 1) + " / " + total);
         };
 
         if (total == 0) {
-            status.setText("No rows found in uploaded file.");
+            status.setText("No rows found.");
             writeNextBtn.setDisable(true);
             skipBtn.setDisable(true);
             stopBtn.setDisable(true);
@@ -612,7 +665,7 @@ public class EntryForm {
             }
             Map<String, String> cur = batchRows.get(index[0]);
 
-            // Build map in same format create(...) expects
+            // Build map for AccessDb.insertAttendee (canonical keys!)
             Map<String, String> data = new LinkedHashMap<>();
             String fn = pick.apply(cur, "FullName");
             String bs = pick.apply(cur, "BSGUID");
@@ -621,10 +674,18 @@ public class EntryForm {
             String em = pick.apply(cur, "Email");
             String ph = pick.apply(cur, "phoneNumber");
             String st = pick.apply(cur, "bsgState");
-            String mt = pick.apply(cur, "memberType");
-            String un = pick.apply(cur, "unitName");
+
+            String mt = pick.apply(cur, "memberTyp");
+            if (mt.isEmpty())
+                mt = pick.apply(cur, "memberType");
+            String un = pick.apply(cur, "unitNam");
+            if (un.isEmpty())
+                un = pick.apply(cur, "unitName");
+
             String rk = pick.apply(cur, "rank_or_section");
-            String dob = pick.apply(cur, "dataOfBirth");
+            String dob = pick.apply(cur, "dataOfBirth"); // canonical
+            if (dob.isEmpty())
+                dob = pick.apply(cur, "dateOfBirth"); // fallback
             String ag = pick.apply(cur, "age");
 
             data.put("FullName", fn);
@@ -634,16 +695,15 @@ public class EntryForm {
             data.put("Email", em);
             data.put("phoneNumber", ph);
             data.put("bsgState", st);
-            data.put("memberType", mt);
-            data.put("unitName", un);
+            data.put("memberTyp", mt); // <-- canonical
+            data.put("unitNam", un); // <-- canonical
             data.put("rank_or_section", rk);
-            data.put("dataOfBirth", dob);
+            data.put("dataOfBirth", dob); // <-- canonical
             data.put("age", ag);
 
             String csv = String.join(",", Arrays.asList(fn, bs, pt, bd, em, ph, st, mt, un, rk, dob, ag));
             data.put("__CSV__", csv);
 
-            // disable buttons while saving
             writeNextBtn.setDisable(true);
             skipBtn.setDisable(true);
             stopBtn.setDisable(true);
@@ -670,7 +730,6 @@ public class EntryForm {
                 if (onSave != null) {
                     onSave.accept(data, done);
                 } else {
-                    // immediate advance if no handler
                     done.run();
                 }
             } catch (Exception ex) {
@@ -705,16 +764,18 @@ public class EntryForm {
             stopBtn.setDisable(true);
         });
 
-        // Add a lightweight auto-fill from NFC while batch is active (optional)
-        startNfcAutoFill(root,
+        // optional NFC auto-fill during batch (guarded by NFC_BUSY)
+        ScheduledExecutorService svc = startNfcAutoFill(root,
                 fullName, bsguid, participationType,
                 bsgDistrict, email, phoneNumber,
-                bsgState, memberType, unitName,
-                rank_or_section, dataOfBirth, age,
-                false, // overwriteAlways
+                bsgState, memberTyp, unitNam,
+                rank_or_section, dateOfBirth, age,
+                false,
                 1200);
+        if (svc != null) {
+            root.getProperties().put("nfc-poller", svc);
+        }
 
         return root;
     }
-
 }

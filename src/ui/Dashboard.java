@@ -1,28 +1,22 @@
 package ui;
 
-import java.io.File;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import db.AccessDb; // your DB helper
-import nfc.SmartMifareWriter;
+import db.AccessDb;
 import nfc.SmartMifareReader;
+import nfc.SmartMifareWriter;
 import javafx.application.Platform;
 import javafx.scene.Parent;
 
 import javafx.animation.FadeTransition;
 import javafx.geometry.Insets;
-import javafx.stage.FileChooser;
-import javafx.scene.control.Alert;
-import javafx.scene.control.Button;
-import javafx.scene.control.ButtonType;
-import javafx.scene.control.Label;
+import javafx.geometry.Pos;
+import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.scene.text.Text;
 import javafx.util.Duration;
 import javafx.scene.Node;
-
-import util.CsvReader;
 
 public class Dashboard extends BorderPane {
 
@@ -33,7 +27,7 @@ public class Dashboard extends BorderPane {
         Button attendanceBtn = new Button("Attendance");
         Button entryFormBtn = new Button("Entry Form");
         Button infoBtn = new Button("Information");
-        Button autoUploadBtn = new Button("Upload CSV"); // repurposed to upload CSV
+        Button batchBtn = new Button("Batch (Filter)");
         Button reportBtn = new Button("Report");
 
         // --- Common Button Style ---
@@ -59,26 +53,19 @@ public class Dashboard extends BorderPane {
                     -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.3), 6, 0, 0, 2);
                 """;
 
-        attendanceBtn.setStyle(btnStyle);
-        entryFormBtn.setStyle(btnStyle);
-        autoUploadBtn.setStyle(btnStyle);
-        reportBtn.setStyle(btnStyle);
-        infoBtn.setStyle(btnStyle);
-
-        // --- Hover Animations ---
-        for (Button btn : new Button[] { attendanceBtn, entryFormBtn, autoUploadBtn, reportBtn, infoBtn }) {
+        for (Button btn : new Button[] { attendanceBtn, entryFormBtn, batchBtn, reportBtn, infoBtn }) {
+            btn.setStyle(btnStyle);
             btn.setOnMouseEntered(e -> btn.setStyle(hoverStyle));
             btn.setOnMouseExited(e -> btn.setStyle(btnStyle));
         }
 
         // --- Navbar Layout ---
-        HBox navBar = new HBox(20, attendanceBtn, entryFormBtn, autoUploadBtn, reportBtn, infoBtn);
+        HBox navBar = new HBox(20, attendanceBtn, entryFormBtn, batchBtn, reportBtn, infoBtn);
         navBar.setPadding(new Insets(15, 20, 15, 20));
         navBar.setStyle(
                 "-fx-background-color: linear-gradient(to bottom, #1565c0, #0d47a1); -fx-alignment: center; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.2), 8, 0, 0, 2);");
 
-        // --- Make Buttons Expand Evenly ---
-        for (Button btn : new Button[] { attendanceBtn, entryFormBtn, autoUploadBtn, reportBtn, infoBtn }) {
+        for (Button btn : new Button[] { attendanceBtn, entryFormBtn, batchBtn, reportBtn, infoBtn }) {
             HBox.setHgrow(btn, Priority.ALWAYS);
             btn.setMaxWidth(Double.MAX_VALUE);
         }
@@ -91,7 +78,7 @@ public class Dashboard extends BorderPane {
         setTop(navBar);
         setCenter(contentArea);
 
-        // --- Button Actions (with animation) ---
+        // --- Actions ---
         attendanceBtn.setOnAction(e -> setContent(AttendancePage.create()));
 
         entryFormBtn.setOnAction(e -> {
@@ -99,102 +86,70 @@ public class Dashboard extends BorderPane {
                 new Thread(() -> {
                     long dbId = -1;
                     try {
-                        System.out.println("\n[DEBUG] Starting form submission process...");
-                        System.out.println("[DEBUG] Form data: " + formData);
-
-                        // 1) Build CSV / text to write to NFC (same as before)
-                        System.out.println("[DEBUG] Building CSV data for card...");
+                        // Build NFC payload
                         String textToWrite = formData.get("__CSV__");
                         if (textToWrite == null) {
                             textToWrite = formData.values().stream()
                                     .map(v -> v == null ? "" : v.trim())
                                     .collect(Collectors.joining(","));
                         }
-                        System.out.println("[DEBUG] Data to write to card: " + textToWrite);
 
-                        // 2) Attempt to write to NFC first to obtain card UID
+                        // Guard: ensure pollers pause while writing
+                        EntryForm.setNfcBusy(true);
                         String cardUid = null;
                         try {
-                            System.out.println("[DEBUG] Attempting to write to NFC card...");
-                            nfc.SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
-                            if (result != null) {
+                            SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
+                            if (result != null)
                                 cardUid = result.uid;
-                                System.out.println("[DEBUG] Card write finished. Card UID: " + cardUid);
-                            } else {
-                                System.out.println("[WARN] Card write returned null result (no UID).");
-                            }
                         } catch (Exception nfcEx) {
-                            final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
-                            System.err.println("[WARN] NFC write failed: " + nfcMsg);
-
-                            // Ask user whether to continue without card UID, or abort
                             final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(
                                     1);
-                            final boolean[] continueWithoutCard = new boolean[1];
-
+                            final boolean[] proceed = new boolean[1];
                             Platform.runLater(() -> {
                                 Alert warn = new Alert(Alert.AlertType.CONFIRMATION,
-                                        "Writing to NFC card failed: " + nfcMsg + "\n\n" +
-                                                "Do you want to save the record to the database without assigning a card?",
+                                        "Writing to NFC card failed: " + nfcEx.getMessage() + "\n\n" +
+                                                "Continue and save to DB without assigning a card?",
                                         ButtonType.YES, ButtonType.NO);
                                 warn.setHeaderText(null);
-                                Optional<ButtonType> res = warn.showAndWait();
-                                continueWithoutCard[0] = res.isPresent() && res.get() == ButtonType.YES;
+                                proceed[0] = warn.showAndWait().filter(b -> b == ButtonType.YES).isPresent();
                                 latch.countDown();
                             });
-
-                            // wait for user's decision (UI thread)
                             try {
                                 latch.await();
                             } catch (InterruptedException ie) {
                                 Thread.currentThread().interrupt();
                             }
-
-                            if (!continueWithoutCard[0]) {
-                                // user chose not to proceed -> show info and exit
-                                Platform.runLater(() -> {
-                                    Alert a2 = new Alert(Alert.AlertType.INFORMATION,
-                                            "Operation cancelled. No DB changes made.", ButtonType.OK);
-                                    a2.setHeaderText(null);
-                                    a2.showAndWait();
-                                });
-                                if (done != null)
-                                    done.run();
+                            if (!proceed[0]) {
                                 return;
                             }
-                            // else fall through with cardUid == null (insert without cardUID)
+                        } finally {
+                            EntryForm.setNfcBusy(false);
                         }
 
-                        // 3) Insert into DB, passing cardUid (may be null if user allowed)
+                        // Insert into DB (also updates ParticipantsRecord)
                         try {
-                            System.out.println("[DEBUG] Attempting database insert...");
                             dbId = AccessDb.insertAttendee(formData, cardUid);
-                            System.out.println("[DEBUG] Database insert successful, id=" + dbId);
                         } catch (Exception dbEx) {
                             final String msg = "DB insert failed: " + dbEx.getMessage();
-                            System.err.println("[ERROR] " + msg);
                             Platform.runLater(() -> {
                                 Alert alert = new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK);
                                 alert.setHeaderText(null);
                                 alert.showAndWait();
                             });
-                            if (done != null)
-                                done.run();
                             return;
                         }
 
-                        // 4) Notify success on UI thread
-                        final String okMsg = "Saved successfully to database. (id=" + dbId + ")";
+                        final long idFinal = dbId;
                         Platform.runLater(() -> {
-                            Alert ok = new Alert(Alert.AlertType.INFORMATION, okMsg, ButtonType.OK);
+                            Alert ok = new Alert(Alert.AlertType.INFORMATION,
+                                    "Saved successfully to database. (id=" + idFinal + ")",
+                                    ButtonType.OK);
                             ok.setHeaderText(null);
                             ok.showAndWait();
                         });
 
-                    } catch (Exception ex) {
-                        final String err = ex.getMessage() == null ? ex.toString() : ex.getMessage();
-                        System.out.println("[ERROR] Operation failed: " + err);
-                        ex.printStackTrace();
+                    } catch (Exception ex2) {
+                        final String err = ex2.getMessage() == null ? ex2.toString() : ex2.getMessage();
                         Platform.runLater(() -> {
                             Alert a = new Alert(Alert.AlertType.ERROR, "Operation failed: " + err, ButtonType.OK);
                             a.setHeaderText(null);
@@ -227,10 +182,20 @@ public class Dashboard extends BorderPane {
             setContent(new StackPane(waitLbl));
 
             new Thread(() -> {
-                SmartMifareReader.ReadResult rr = SmartMifareReader.readUIDWithData(10_000);
+                // Pause pollers while doing a blocking read
+                EntryForm.setNfcBusy(true);
+                SmartMifareReader.ReadResult rr = null;
+                try {
+                    rr = SmartMifareReader.readUIDWithData(10_000);
+                } catch (Exception ex) {
+                    // ignore here, show message below
+                } finally {
+                    EntryForm.setNfcBusy(false);
+                }
 
+                SmartMifareReader.ReadResult finalRR = rr;
                 Platform.runLater(() -> {
-                    if (rr == null || rr.uid == null) {
+                    if (finalRR == null || finalRR.uid == null) {
                         Label err = new Label("❌ No card read (timed out or error).");
                         err.setStyle("""
                                     -fx-font-size: 24px;
@@ -247,46 +212,10 @@ public class Dashboard extends BorderPane {
                         setContent(new StackPane(err));
                         return;
                     }
-
                     Map<String, String> map = new LinkedHashMap<>();
-                    map.put("UID", rr.uid);
-                    String data = (rr.data == null) ? "" : rr.data.trim();
-                    if (!data.isEmpty()) {
-                        boolean parsed = false;
-                        String[] items;
-                        if (data.contains("|")) {
-                            items = data.split("\\|");
-                        } else if (data.contains(";")) {
-                            items = data.split(";");
-                        } else if (data.contains(",")) {
-                            items = data.split(",");
-                        } else {
-                            items = new String[] { data };
-                        }
-
-                        List<String> leftovers = new ArrayList<>();
-                        for (String it : items) {
-                            String s = it.trim();
-                            if (s.contains(":")) {
-                                String[] kv = s.split(":", 2);
-                                map.put(kv[0].trim(), kv[1].trim());
-                                parsed = true;
-                            } else if (s.contains("=")) {
-                                String[] kv = s.split("=", 2);
-                                map.put(kv[0].trim(), kv[1].trim());
-                                parsed = true;
-                            } else {
-                                leftovers.add(s);
-                            }
-                        }
-                        if (!parsed) {
-                            map.put("Readable data", data);
-                        } else if (!leftovers.isEmpty()) {
-                            map.put("Other data", String.join(" | ", leftovers));
-                        }
-                    } else {
-                        map.put("Readable data", "(none)");
-                    }
+                    map.put("UID", finalRR.uid);
+                    map.put("Readable data",
+                            (finalRR.data == null || finalRR.data.trim().isEmpty()) ? "(none)" : finalRR.data.trim());
 
                     GridPane grid = new GridPane();
                     grid.setVgap(12);
@@ -299,157 +228,63 @@ public class Dashboard extends BorderPane {
                                 -fx-border-color: #E0E0E0;
                                 -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.08), 12, 0, 0, 2);
                             """);
-
                     int row = 0;
-                    for (Map.Entry<String, String> entry : map.entrySet()) {
-                        Label k = new Label(entry.getKey() + ":");
-                        k.setStyle("""
-                                    -fx-font-weight: bold;
-                                    -fx-font-size: 16px;
-                                    -fx-text-fill: #1976D2;
-                                """);
-                        Label v = new Label(entry.getValue());
-                        v.setStyle("""
-                                    -fx-font-size: 16px;
-                                    -fx-text-fill: #212121;
-                                """);
-                        v.setWrapText(true);
-                        grid.add(k, 0, row);
-                        grid.add(v, 1, row);
+                    for (Map.Entry<String, String> en : map.entrySet()) {
+                        grid.add(new Label(en.getKey() + ":"), 0, row);
+                        grid.add(new Label(en.getValue()), 1, row);
                         row++;
                     }
-
-                    VBox container = new VBox(16);
+                    VBox container = new VBox(16, new Label("Card Information"), grid);
                     container.setPadding(new Insets(20));
-                    container.setStyle("-fx-background-color: #F5F5F5;");
-                    Label header = new Label("Card Information");
-                    header.setStyle("""
-                                -fx-font-size: 28px;
-                                -fx-font-weight: bold;
-                                -fx-text-fill: #1565C0;
-                            """);
-                    container.getChildren().addAll(header, grid);
-
                     setContent(container);
                 });
             }, "info-read-thread").start();
         });
 
-        autoUploadBtn.setOnAction(e -> {
-            FileChooser chooser = new FileChooser();
-            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV Files", "*.csv"));
-            File f = chooser.showOpenDialog(this.getScene() == null ? null : this.getScene().getWindow());
-            if (f == null)
+        // NEW: Batch (Filter)
+        batchBtn.setOnAction(e -> {
+            List<Map<String, String>> rows = BatchFilterDialog.showAndFetch(
+                    this.getScene() == null ? null : this.getScene().getWindow());
+            if (rows == null || rows.isEmpty())
                 return;
-
-            List<Map<String, String>> rows;
-            try {
-                rows = CsvReader.readCsvAsMaps(f.toPath());
-            } catch (Exception ex) {
-                Platform.runLater(() -> {
-                    Alert a = new Alert(Alert.AlertType.ERROR, "Failed to read CSV: " + ex.getMessage(), ButtonType.OK);
-                    a.setHeaderText(null);
-                    a.showAndWait();
-                });
-                return;
-            }
 
             Parent batch = EntryForm.createBatch((formData, done) -> {
                 new Thread(() -> {
-                    long dbId = -1;
                     try {
-                        // 1) Attempt to write to NFC first to obtain card UID
-                        String cardUid = null;
-                        try {
-                            String textToWrite = formData.get("__CSV__");
-                            if (textToWrite == null) {
-                                textToWrite = formData.values().stream()
-                                        .map(v -> v == null ? "" : v.trim())
-                                        .collect(Collectors.joining(","));
-                            }
-
-                            nfc.SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
-                            if (result != null) {
-                                cardUid = result.uid;
-                                System.out.println("[DEBUG] Card write UID: " + cardUid);
-                            }
-                        } catch (Exception nfcEx) {
-                            final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
-
-                            // Ask user whether to continue without card UID, or abort
-                            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(
-                                    1);
-                            final boolean[] continueWithoutCard = new boolean[1];
-
-                            Platform.runLater(() -> {
-                                Alert warn = new Alert(Alert.AlertType.CONFIRMATION,
-                                        "Writing to NFC card failed: " + nfcMsg + "\n\n" +
-                                                "Do you want to save the record to the database without assigning a card?",
-                                        ButtonType.YES, ButtonType.NO);
-                                warn.setHeaderText(null);
-                                Optional<ButtonType> res = warn.showAndWait();
-                                continueWithoutCard[0] = res.isPresent() && res.get() == ButtonType.YES;
-                                latch.countDown();
-                            });
-
-                            // wait for user's decision (UI thread)
-                            try {
-                                latch.await();
-                            } catch (InterruptedException ie) {
-                                Thread.currentThread().interrupt();
-                            }
-
-                            if (!continueWithoutCard[0]) {
-                                // user chose not to proceed -> show info and exit
-                                Platform.runLater(() -> {
-                                    Alert a2 = new Alert(Alert.AlertType.INFORMATION,
-                                            "Operation cancelled. No DB changes made.", ButtonType.OK);
-                                    a2.setHeaderText(null);
-                                    a2.showAndWait();
-                                });
-                                if (done != null)
-                                    done.run();
-                                return;
-                            }
-                            // else fall through with cardUid == null (insert without cardUID)
+                        String textToWrite = formData.get("__CSV__");
+                        if (textToWrite == null) {
+                            textToWrite = formData.values().stream()
+                                    .map(v -> v == null ? "" : v.trim())
+                                    .collect(Collectors.joining(","));
                         }
 
-                        // 2) Insert into DB, passing cardUid (may be null if user allowed)
+                        String cardUid = null;
+                        EntryForm.setNfcBusy(true);
                         try {
-                            dbId = AccessDb.insertAttendee(formData, cardUid);
+                            SmartMifareWriter.WriteResult wr = SmartMifareWriter.writeText(textToWrite);
+                            if (wr != null)
+                                cardUid = wr.uid;
+                        } catch (Exception nfcEx) {
+                            System.err.println("[WARN] NFC write failed: " + nfcEx.getMessage());
+                        } finally {
+                            EntryForm.setNfcBusy(false);
+                        }
+
+                        try {
+                            AccessDb.insertAttendee(formData, cardUid);
                         } catch (Exception dbEx) {
-                            final String msg = "DB insert failed: " + dbEx.getMessage();
                             Platform.runLater(() -> {
-                                Alert alert = new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK);
+                                Alert alert = new Alert(Alert.AlertType.ERROR,
+                                        "DB insert failed: " + dbEx.getMessage(), ButtonType.OK);
                                 alert.setHeaderText(null);
                                 alert.showAndWait();
                             });
-                            if (done != null)
-                                done.run();
-                            return;
                         }
-
-                        // 3) success notification
-                        final long savedId = dbId;
-                        Platform.runLater(() -> {
-                            Alert ok = new Alert(Alert.AlertType.INFORMATION, "Saved to DB (id=" + savedId + ")",
-                                    ButtonType.OK);
-                            ok.setHeaderText(null);
-                            ok.showAndWait();
-                        });
-
-                    } catch (Exception ex) {
-                        final String err = ex.getMessage() == null ? ex.toString() : ex.getMessage();
-                        Platform.runLater(() -> {
-                            Alert a3 = new Alert(Alert.AlertType.ERROR, "Operation failed: " + err, ButtonType.OK);
-                            a3.setHeaderText(null);
-                            a3.showAndWait();
-                        });
                     } finally {
                         if (done != null)
                             done.run();
                     }
-                }, "writer-db-thread").start();
+                }, "batch-filter-thread").start();
             }, rows);
 
             setContent(batch);
@@ -460,6 +295,12 @@ public class Dashboard extends BorderPane {
 
     // --- Helper Method for Page Switching with Animation ---
     private void setContent(Node node) {
+        // stop any NFC poller from previous view
+        if (!contentArea.getChildren().isEmpty()) {
+            Node prev = contentArea.getChildren().get(0);
+            EntryForm.stopNfcPolling(prev);
+        }
+
         contentArea.getChildren().setAll(node);
         FadeTransition fadeIn = new FadeTransition(Duration.millis(400), node);
         fadeIn.setFromValue(0);
@@ -472,5 +313,4 @@ public class Dashboard extends BorderPane {
         newText.setStyle("-fx-font-size: 20px; -fx-fill: #212121; -fx-font-weight: 600;");
         setContent(newText);
     }
-
 }
