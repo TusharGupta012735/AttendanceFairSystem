@@ -46,16 +46,13 @@ public class AccessDb {
     }
 
     /**
-     * Insert a row into ParticipantsWrite. Returns generated Id (AUTOINCREMENT) or
-     * -1 on failure.
+     * Insert a row into ParticipantsWrite and then update the matching row
+     * in ParticipantsRecord (set status='T' and CardUID = cardUid).
+     * Returns generated Id (AUTOINCREMENT) or -1 on failure.
      *
-     * The method only inserts columns that actually exist in the table so it won't
-     * fail
-     * if CardUID or CreatedAt are missing.
-     *
-     * Expects map keys from EntryForm:
-     * FullName, BSGUID, ParticipationType, bsgDistrict, Email, phoneNumber,
-     * bsgState, memberTyp, unitNam, rank_or_section, dataOfBirth, age
+     * The insert only includes columns that actually exist in ParticipantsWrite.
+     * The update tries to match ParticipantsRecord by BSGUID, otherwise falls
+     * back to FullName+DateOfBirth, then PhoneNumber.
      */
     public static long insertAttendee(Map<String, String> data, String cardUid) throws SQLException {
         List<String> expected = Arrays.asList(
@@ -65,127 +62,266 @@ public class AccessDb {
                 "CardUID", "CreatedAt");
 
         try (Connection c = getConnection()) {
-            // discover actual columns present (uppercase for comparison)
-            Set<String> actual = new HashSet<>();
-            DatabaseMetaData md = c.getMetaData();
-            try (ResultSet rs = md.getColumns(null, null, "ParticipantsWrite", "%")) {
-                while (rs.next()) {
-                    String col = rs.getString("COLUMN_NAME");
-                    if (col != null)
-                        actual.add(col.toUpperCase());
+            c.setAutoCommit(false); // start transaction
+
+            try {
+                // discover actual columns present for ParticipantsWrite
+                Set<String> actual = new HashSet<>();
+                DatabaseMetaData md = c.getMetaData();
+                try (ResultSet rs = md.getColumns(null, null, "ParticipantsWrite", "%")) {
+                    while (rs.next()) {
+                        String col = rs.getString("COLUMN_NAME");
+                        if (col != null)
+                            actual.add(col.toUpperCase());
+                    }
                 }
-            }
 
-            List<String> cols = new ArrayList<>();
-            List<Object> vals = new ArrayList<>();
+                List<String> cols = new ArrayList<>();
+                List<Object> vals = new ArrayList<>();
 
-            for (String col : expected) {
-                if (!actual.contains(col.toUpperCase()))
-                    continue;
+                for (String col : expected) {
+                    if (!actual.contains(col.toUpperCase()))
+                        continue;
 
-                switch (col) {
-                    case "DateOfBirth": {
-                        String dob = normalize(data.get("dataOfBirth"));
-                        if (dob == null)
-                            vals.add(null);
-                        else {
-                            try {
-                                vals.add(java.sql.Date.valueOf(dob)); // explicitly java.sql.Date
-                            } catch (IllegalArgumentException ex) {
+                    switch (col) {
+                        case "DateOfBirth": {
+                            String dob = normalize(data.get("dataOfBirth"));
+                            if (dob == null)
                                 vals.add(null);
+                            else {
+                                try {
+                                    vals.add(java.sql.Date.valueOf(dob)); // explicitly java.sql.Date
+                                } catch (IllegalArgumentException ex) {
+                                    vals.add(null);
+                                }
                             }
+                            break;
                         }
-                        break;
+                        case "CreatedAt":
+                            vals.add(java.sql.Timestamp.from(Instant.now()));
+                            break;
+                        case "CardUID":
+                            vals.add(normalize(cardUid));
+                            break;
+                        default: {
+                            String mapKey;
+                            switch (col) {
+                                case "FullName":
+                                    mapKey = "FullName";
+                                    break;
+                                case "BSGUID":
+                                    mapKey = "BSGUID";
+                                    break;
+                                case "ParticipationType":
+                                    mapKey = "ParticipationType";
+                                    break;
+                                case "BSGDistrict":
+                                    mapKey = "bsgDistrict";
+                                    break;
+                                case "Email":
+                                    mapKey = "Email";
+                                    break;
+                                case "PhoneNumber":
+                                    mapKey = "phoneNumber";
+                                    break;
+                                case "BSGState":
+                                    mapKey = "bsgState";
+                                    break;
+                                case "MemberType":
+                                    mapKey = "memberTyp";
+                                    break;
+                                case "UnitName":
+                                    mapKey = "unitNam";
+                                    break;
+                                case "RankOrSection":
+                                    mapKey = "rank_or_section";
+                                    break;
+                                case "Age":
+                                    mapKey = "age";
+                                    break;
+                                default:
+                                    mapKey = col;
+                            }
+                            vals.add(normalize(data.get(mapKey)));
+                        }
                     }
-                    case "CreatedAt":
-                        vals.add(java.sql.Timestamp.from(Instant.now()));
-                        break;
-                    case "CardUID":
-                        vals.add(normalize(cardUid));
-                        break;
-                    default: {
-                        String mapKey;
-                        switch (col) {
-                            case "FullName":
-                                mapKey = "FullName";
-                                break;
-                            case "BSGUID":
-                                mapKey = "BSGUID";
-                                break;
-                            case "ParticipationType":
-                                mapKey = "ParticipationType";
-                                break;
-                            case "BSGDistrict":
-                                mapKey = "bsgDistrict";
-                                break;
-                            case "Email":
-                                mapKey = "Email";
-                                break;
-                            case "PhoneNumber":
-                                mapKey = "phoneNumber";
-                                break;
-                            case "BSGState":
-                                mapKey = "bsgState";
-                                break;
-                            case "MemberType":
-                                mapKey = "memberTyp";
-                                break;
-                            case "UnitName":
-                                mapKey = "unitNam";
-                                break;
-                            case "RankOrSection":
-                                mapKey = "rank_or_section";
-                                break;
-                            case "Age":
-                                mapKey = "age";
-                                break;
-                            default:
-                                mapKey = col;
+                    cols.add("[" + col + "]");
+                }
+
+                if (cols.isEmpty())
+                    throw new SQLException("No insertable columns found in ParticipantsWrite.");
+
+                String placeholders = String.join(",", Collections.nCopies(cols.size(), "?"));
+                String sql = "INSERT INTO [ParticipantsWrite] (" + String.join(",", cols) + ") VALUES (" + placeholders
+                        + ")";
+
+                long generatedId = -1;
+                try (PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+                    for (int i = 0; i < vals.size(); i++) {
+                        Object v = vals.get(i);
+                        int idx = i + 1;
+                        String colName = cols.get(i).replace("[", "").replace("]", "");
+                        if (v == null) {
+                            if ("DateOfBirth".equalsIgnoreCase(colName))
+                                ps.setNull(idx, Types.DATE);
+                            else if ("CreatedAt".equalsIgnoreCase(colName))
+                                ps.setNull(idx, Types.TIMESTAMP);
+                            else
+                                ps.setNull(idx, Types.VARCHAR);
+                        } else if (v instanceof java.sql.Date) {
+                            ps.setDate(idx, (java.sql.Date) v);
+                        } else if (v instanceof java.sql.Timestamp) {
+                            ps.setTimestamp(idx, (java.sql.Timestamp) v);
+                        } else {
+                            ps.setString(idx, v.toString());
                         }
-                        vals.add(normalize(data.get(mapKey)));
+                    }
+
+                    int affected = ps.executeUpdate();
+                    if (affected == 0) {
+                        c.rollback();
+                        return -1;
+                    }
+                    try (ResultSet keys = ps.getGeneratedKeys()) {
+                        if (keys.next())
+                            generatedId = keys.getLong(1);
                     }
                 }
-                cols.add("[" + col + "]");
-            }
 
-            if (cols.isEmpty())
-                throw new SQLException("No insertable columns found in ParticipantsWrite.");
-
-            String placeholders = String.join(",", Collections.nCopies(cols.size(), "?"));
-            String sql = "INSERT INTO [ParticipantsWrite] (" + String.join(",", cols) + ") VALUES (" + placeholders
-                    + ")";
-
-            try (PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
-                for (int i = 0; i < vals.size(); i++) {
-                    Object v = vals.get(i);
-                    int idx = i + 1;
-                    String colName = cols.get(i).replace("[", "").replace("]", "");
-                    if (v == null) {
-                        if ("DateOfBirth".equalsIgnoreCase(colName))
-                            ps.setNull(idx, Types.DATE);
-                        else if ("CreatedAt".equalsIgnoreCase(colName))
-                            ps.setNull(idx, Types.TIMESTAMP);
-                        else
-                            ps.setNull(idx, Types.VARCHAR);
-                    } else if (v instanceof java.sql.Date) {
-                        ps.setDate(idx, (java.sql.Date) v);
-                    } else if (v instanceof java.sql.Timestamp) {
-                        ps.setTimestamp(idx, (java.sql.Timestamp) v);
+                // After insert, attempt to update ParticipantsRecord for this participant
+                try {
+                    boolean updated = updateParticipantsRecord(c, data, cardUid);
+                    if (!updated) {
+                        // if you want this to be fatal, uncomment:
+                        // throw new SQLException("Failed to find matching ParticipantsRecord to
+                        // update.");
+                        System.out.println("WARN: no matching ParticipantsRecord updated for BSGUID/FullName/Phone.");
                     } else {
-                        ps.setString(idx, v.toString());
+                        System.out.println("DEBUG: ParticipantsRecord updated with status='T' and CardUID.");
                     }
+                } catch (SQLException ex) {
+                    // if update fails due to schema or sql error, rollback and rethrow
+                    c.rollback();
+                    throw ex;
                 }
 
-                int affected = ps.executeUpdate();
-                if (affected == 0)
-                    return -1;
-                try (ResultSet keys = ps.getGeneratedKeys()) {
-                    if (keys.next())
-                        return keys.getLong(1);
+                c.commit();
+                return generatedId;
+            } catch (SQLException ex) {
+                try {
+                    c.rollback();
+                } catch (Exception ignored) {
                 }
-                return -1;
+                throw ex;
+            } finally {
+                try {
+                    c.setAutoCommit(true);
+                } catch (Exception ignored) {
+                }
             }
         }
+    }
+
+    /**
+     * Attempt to update ParticipantsRecord to set status='T' and CardUID=cardUid.
+     * Uses the same connection (transactional). Returns true if at least one row
+     * updated.
+     *
+     * Matching strategy (in order):
+     * 1) BSGUID = provided BSGUID (preferred)
+     * 2) FullName + DateOfBirth
+     * 3) PhoneNumber
+     *
+     * If the ParticipantsRecord table or required columns don't exist, this method
+     * will throw SQLException which the caller can handle.
+     */
+    private static boolean updateParticipantsRecord(Connection c, Map<String, String> data, String cardUid)
+            throws SQLException {
+        // Normalize keys from incoming data map
+        String bsguid = normalize(data.get("BSGUID"));
+        String fullName = normalize(data.get("FullName"));
+        String dobStr = normalize(data.get("dataOfBirth")); // expected yyyy-mm-dd
+        String phone = normalize(data.get("phoneNumber"));
+
+        DatabaseMetaData md = c.getMetaData();
+        // check table exists
+        boolean tableExists = false;
+        try (ResultSet rs = md.getTables(null, null, "ParticipantsRecord", new String[] { "TABLE" })) {
+            if (rs.next())
+                tableExists = true;
+        }
+        if (!tableExists) {
+            try (ResultSet rs2 = md.getTables(null, null, "ParticipantsRecord".toUpperCase(),
+                    new String[] { "TABLE" })) {
+                if (rs2.next())
+                    tableExists = true;
+            }
+        }
+        if (!tableExists) {
+            throw new SQLException("ParticipantsRecord table not found in DB.");
+        }
+
+        // preferred update by BSGUID
+        if (bsguid != null) {
+            String upd = "UPDATE [ParticipantsRecord] SET [status] = ?, [CardUID] = ? WHERE [BSGUID] = ?";
+            try (PreparedStatement ps = c.prepareStatement(upd)) {
+                ps.setString(1, "T");
+                ps.setString(2, bsguid == null ? null : normalize(cardUid));
+                ps.setString(3, bsguid);
+                int rows = ps.executeUpdate();
+                if (rows > 0)
+                    return true;
+            }
+        }
+
+        // fallback: FullName + DateOfBirth (if dob parseable)
+        if (fullName != null && dobStr != null) {
+            // try as DATE if possible
+            java.sql.Date dobSql = null;
+            try {
+                dobSql = java.sql.Date.valueOf(dobStr);
+            } catch (IllegalArgumentException ignored) {
+            }
+            String upd;
+            if (dobSql != null) {
+                upd = "UPDATE [ParticipantsRecord] SET [status] = ?, [CardUID] = ? WHERE [FullName] = ? AND [DateOfBirth] = ?";
+                try (PreparedStatement ps = c.prepareStatement(upd)) {
+                    ps.setString(1, "T");
+                    ps.setString(2, normalize(cardUid));
+                    ps.setString(3, fullName);
+                    ps.setDate(4, dobSql);
+                    int rows = ps.executeUpdate();
+                    if (rows > 0)
+                        return true;
+                }
+            } else {
+                upd = "UPDATE [ParticipantsRecord] SET [status] = ?, [CardUID] = ? WHERE [FullName] = ?";
+                try (PreparedStatement ps = c.prepareStatement(upd)) {
+                    ps.setString(1, "T");
+                    ps.setString(2, normalize(cardUid));
+                    ps.setString(3, fullName);
+                    int rows = ps.executeUpdate();
+                    if (rows > 0)
+                        return true;
+                }
+            }
+        }
+
+        // fallback: phone number
+        if (phone != null) {
+            String upd = "UPDATE [ParticipantsRecord] SET [status] = ?, [CardUID] = ? WHERE [PhoneNumber] = ?";
+            try (PreparedStatement ps = c.prepareStatement(upd)) {
+                ps.setString(1, "T");
+                ps.setString(2, normalize(cardUid));
+                ps.setString(3, phone);
+                int rows = ps.executeUpdate();
+                if (rows > 0)
+                    return true;
+            }
+        }
+
+        // nothing matched
+        return false;
     }
 
     /**

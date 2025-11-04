@@ -102,23 +102,7 @@ public class Dashboard extends BorderPane {
                         System.out.println("\n[DEBUG] Starting form submission process...");
                         System.out.println("[DEBUG] Form data: " + formData);
 
-                        // 1) Insert to DB first
-                        try {
-                            System.out.println("[DEBUG] Attempting database insert...");
-                            dbId = AccessDb.insertAttendee(formData, null); // no card UID
-                            System.out.println("[DEBUG] Database insert successful, id=" + dbId);
-                        } catch (Exception dbEx) {
-                            final String msg = "DB insert failed: " + dbEx.getMessage();
-                            System.err.println("[ERROR] " + msg);
-                            Platform.runLater(() -> {
-                                Alert alert = new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK);
-                                alert.setHeaderText(null);
-                                alert.showAndWait();
-                            });
-                            return;
-                        }
-
-                        // 2) Build CSV / text to write to NFC
+                        // 1) Build CSV / text to write to NFC (same as before)
                         System.out.println("[DEBUG] Building CSV data for card...");
                         String textToWrite = formData.get("__CSV__");
                         if (textToWrite == null) {
@@ -128,26 +112,75 @@ public class Dashboard extends BorderPane {
                         }
                         System.out.println("[DEBUG] Data to write to card: " + textToWrite);
 
-                        // 3) Write to NFC (this may block while waiting for a card)
+                        // 2) Attempt to write to NFC first to obtain card UID
+                        String cardUid = null;
                         try {
                             System.out.println("[DEBUG] Attempting to write to NFC card...");
                             nfc.SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
                             if (result != null) {
-                                System.out.println("[DEBUG] Card write finished. Card UID: " + result.uid);
-                                // update DB with card UID if desired (omitted here)
+                                cardUid = result.uid;
+                                System.out.println("[DEBUG] Card write finished. Card UID: " + cardUid);
                             } else {
                                 System.out.println("[WARN] Card write returned null result (no UID).");
                             }
                         } catch (Exception nfcEx) {
                             final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
                             System.err.println("[WARN] NFC write failed: " + nfcMsg);
+
+                            // Ask user whether to continue without card UID, or abort
+                            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(
+                                    1);
+                            final boolean[] continueWithoutCard = new boolean[1];
+
                             Platform.runLater(() -> {
-                                Alert warn = new Alert(Alert.AlertType.WARNING,
-                                        "Saved to database, but writing to NFC card failed: " + nfcMsg,
-                                        ButtonType.OK);
+                                Alert warn = new Alert(Alert.AlertType.CONFIRMATION,
+                                        "Writing to NFC card failed: " + nfcMsg + "\n\n" +
+                                                "Do you want to save the record to the database without assigning a card?",
+                                        ButtonType.YES, ButtonType.NO);
                                 warn.setHeaderText(null);
-                                warn.showAndWait();
+                                Optional<ButtonType> res = warn.showAndWait();
+                                continueWithoutCard[0] = res.isPresent() && res.get() == ButtonType.YES;
+                                latch.countDown();
                             });
+
+                            // wait for user's decision (UI thread)
+                            try {
+                                latch.await();
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                            }
+
+                            if (!continueWithoutCard[0]) {
+                                // user chose not to proceed -> show info and exit
+                                Platform.runLater(() -> {
+                                    Alert a2 = new Alert(Alert.AlertType.INFORMATION,
+                                            "Operation cancelled. No DB changes made.", ButtonType.OK);
+                                    a2.setHeaderText(null);
+                                    a2.showAndWait();
+                                });
+                                if (done != null)
+                                    done.run();
+                                return;
+                            }
+                            // else fall through with cardUid == null (insert without cardUID)
+                        }
+
+                        // 3) Insert into DB, passing cardUid (may be null if user allowed)
+                        try {
+                            System.out.println("[DEBUG] Attempting database insert...");
+                            dbId = AccessDb.insertAttendee(formData, cardUid);
+                            System.out.println("[DEBUG] Database insert successful, id=" + dbId);
+                        } catch (Exception dbEx) {
+                            final String msg = "DB insert failed: " + dbEx.getMessage();
+                            System.err.println("[ERROR] " + msg);
+                            Platform.runLater(() -> {
+                                Alert alert = new Alert(Alert.AlertType.ERROR, msg, ButtonType.OK);
+                                alert.setHeaderText(null);
+                                alert.showAndWait();
+                            });
+                            if (done != null)
+                                done.run();
+                            return;
                         }
 
                         // 4) Notify success on UI thread
@@ -322,13 +355,68 @@ public class Dashboard extends BorderPane {
             }
 
             Parent batch = EntryForm.createBatch((formData, done) -> {
-                // same onSave logic as single-entry
                 new Thread(() -> {
                     long dbId = -1;
                     try {
-                        // 1) insert DB
+                        // 1) Attempt to write to NFC first to obtain card UID
+                        String cardUid = null;
                         try {
-                            dbId = AccessDb.insertAttendee(formData, null);
+                            String textToWrite = formData.get("__CSV__");
+                            if (textToWrite == null) {
+                                textToWrite = formData.values().stream()
+                                        .map(v -> v == null ? "" : v.trim())
+                                        .collect(Collectors.joining(","));
+                            }
+
+                            nfc.SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
+                            if (result != null) {
+                                cardUid = result.uid;
+                                System.out.println("[DEBUG] Card write UID: " + cardUid);
+                            }
+                        } catch (Exception nfcEx) {
+                            final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
+
+                            // Ask user whether to continue without card UID, or abort
+                            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(
+                                    1);
+                            final boolean[] continueWithoutCard = new boolean[1];
+
+                            Platform.runLater(() -> {
+                                Alert warn = new Alert(Alert.AlertType.CONFIRMATION,
+                                        "Writing to NFC card failed: " + nfcMsg + "\n\n" +
+                                                "Do you want to save the record to the database without assigning a card?",
+                                        ButtonType.YES, ButtonType.NO);
+                                warn.setHeaderText(null);
+                                Optional<ButtonType> res = warn.showAndWait();
+                                continueWithoutCard[0] = res.isPresent() && res.get() == ButtonType.YES;
+                                latch.countDown();
+                            });
+
+                            // wait for user's decision (UI thread)
+                            try {
+                                latch.await();
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                            }
+
+                            if (!continueWithoutCard[0]) {
+                                // user chose not to proceed -> show info and exit
+                                Platform.runLater(() -> {
+                                    Alert a2 = new Alert(Alert.AlertType.INFORMATION,
+                                            "Operation cancelled. No DB changes made.", ButtonType.OK);
+                                    a2.setHeaderText(null);
+                                    a2.showAndWait();
+                                });
+                                if (done != null)
+                                    done.run();
+                                return;
+                            }
+                            // else fall through with cardUid == null (insert without cardUID)
+                        }
+
+                        // 2) Insert into DB, passing cardUid (may be null if user allowed)
+                        try {
+                            dbId = AccessDb.insertAttendee(formData, cardUid);
                         } catch (Exception dbEx) {
                             final String msg = "DB insert failed: " + dbEx.getMessage();
                             Platform.runLater(() -> {
@@ -341,32 +429,7 @@ public class Dashboard extends BorderPane {
                             return;
                         }
 
-                        // 2) write to NFC
-                        String textToWrite = formData.get("__CSV__");
-                        if (textToWrite == null) {
-                            textToWrite = formData.values().stream()
-                                    .map(v -> v == null ? "" : v.trim())
-                                    .collect(Collectors.joining(","));
-                        }
-
-                        try {
-                            nfc.SmartMifareWriter.WriteResult result = SmartMifareWriter.writeText(textToWrite);
-                            if (result != null) {
-                                System.out.println("[DEBUG] Card write UID: " + result.uid);
-                                // optional: update CardUID in DB here
-                            }
-                        } catch (Exception nfcEx) {
-                            final String nfcMsg = nfcEx.getMessage() == null ? nfcEx.toString() : nfcEx.getMessage();
-                            Platform.runLater(() -> {
-                                Alert warn = new Alert(Alert.AlertType.WARNING,
-                                        "Saved to database, but writing to NFC card failed: " + nfcMsg,
-                                        ButtonType.OK);
-                                warn.setHeaderText(null);
-                                warn.showAndWait();
-                            });
-                        }
-
-                        // Use final local variable for lambda capture
+                        // 3) success notification
                         final long savedId = dbId;
                         Platform.runLater(() -> {
                             Alert ok = new Alert(Alert.AlertType.INFORMATION, "Saved to DB (id=" + savedId + ")",
@@ -378,9 +441,9 @@ public class Dashboard extends BorderPane {
                     } catch (Exception ex) {
                         final String err = ex.getMessage() == null ? ex.toString() : ex.getMessage();
                         Platform.runLater(() -> {
-                            Alert a = new Alert(Alert.AlertType.ERROR, "Write failed: " + err, ButtonType.OK);
-                            a.setHeaderText(null);
-                            a.showAndWait();
+                            Alert a3 = new Alert(Alert.AlertType.ERROR, "Operation failed: " + err, ButtonType.OK);
+                            a3.setHeaderText(null);
+                            a3.showAndWait();
                         });
                     } finally {
                         if (done != null)

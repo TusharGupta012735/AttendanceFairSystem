@@ -489,8 +489,8 @@ public class EntryForm {
         TextField email = new TextField();
         TextField phoneNumber = new TextField();
         TextField bsgState = new TextField();
-        TextField memberTyp = new TextField();
-        TextField unitNam = new TextField();
+        TextField memberType = new TextField();
+        TextField unitName = new TextField();
         ComboBox<String> rank_or_section = new ComboBox<>();
         rank_or_section.getItems().addAll("guide", "scout", "ranger");
         DatePicker dataOfBirth = new DatePicker();
@@ -507,13 +507,13 @@ public class EntryForm {
         addField(left, 1, "BSGUID", bsguid);
         addField(left, 2, "ParticipationType", participationType);
         addField(left, 3, "bsgDistrict", bsgDistrict);
-        addField(left, 4, "unitNam", unitNam);
+        addField(left, 4, "unitNam", unitName);
         addField(left, 5, "dataOfBirth", dataOfBirth);
 
         addField(right, 0, "Email", email);
         addField(right, 1, "phoneNumber", phoneNumber);
         addField(right, 2, "bsgState", bsgState);
-        addField(right, 3, "memberTyp", memberTyp);
+        addField(right, 3, "memberTyp", memberType);
         addField(right, 4, "rank_or_section", rank_or_section);
         addField(right, 5, "age", age);
 
@@ -558,8 +558,8 @@ public class EntryForm {
                 email.clear();
                 phoneNumber.clear();
                 bsgState.clear();
-                memberTyp.clear();
-                unitNam.clear();
+                memberType.clear();
+                unitName.clear();
                 rank_or_section.setValue(null);
                 dataOfBirth.setValue(null);
                 age.clear();
@@ -575,8 +575,8 @@ public class EntryForm {
             email.setText(pick.apply(cur, "Email"));
             phoneNumber.setText(pick.apply(cur, "phoneNumber"));
             bsgState.setText(pick.apply(cur, "bsgState"));
-            memberTyp.setText(pick.apply(cur, "memberTyp"));
-            unitNam.setText(pick.apply(cur, "unitNam"));
+            memberType.setText(pick.apply(cur, "memberType"));
+            unitName.setText(pick.apply(cur, "unitName"));
             String r = pick.apply(cur, "rank_or_section");
             if (!r.isEmpty())
                 rank_or_section.setValue(r);
@@ -621,8 +621,8 @@ public class EntryForm {
             String em = pick.apply(cur, "Email");
             String ph = pick.apply(cur, "phoneNumber");
             String st = pick.apply(cur, "bsgState");
-            String mt = pick.apply(cur, "memberTyp");
-            String un = pick.apply(cur, "unitNam");
+            String mt = pick.apply(cur, "memberType");
+            String un = pick.apply(cur, "unitName");
             String rk = pick.apply(cur, "rank_or_section");
             String dob = pick.apply(cur, "dataOfBirth");
             String ag = pick.apply(cur, "age");
@@ -634,8 +634,8 @@ public class EntryForm {
             data.put("Email", em);
             data.put("phoneNumber", ph);
             data.put("bsgState", st);
-            data.put("memberTyp", mt);
-            data.put("unitNam", un);
+            data.put("memberType", mt);
+            data.put("unitName", un);
             data.put("rank_or_section", rk);
             data.put("dataOfBirth", dob);
             data.put("age", ag);
@@ -709,7 +709,7 @@ public class EntryForm {
         startNfcAutoFill(root,
                 fullName, bsguid, participationType,
                 bsgDistrict, email, phoneNumber,
-                bsgState, memberTyp, unitNam,
+                bsgState, memberType, unitName,
                 rank_or_section, dataOfBirth, age,
                 false, // overwriteAlways
                 1200);
